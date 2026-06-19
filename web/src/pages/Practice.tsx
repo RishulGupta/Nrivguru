@@ -56,28 +56,40 @@ export default function Practice() {
   const accumulatedRefFrames = useRef<PoseLandmark[][]>([]);
   const timingRef = useRef<{ user: number; ref: number }[]>([]);
 
-  // Load routine data
+  // Load routine data (Supabase or localStorage fallback)
   const [showFps, setShowFps] = useState(false);
   const fpsRef = useRef({ frames: 0, lastTime: performance.now(), fps: 0 });
   useEffect(() => {
-    if (!session?.user?.id || !id) return;
-    supabase.rpc('rpc_get_routine_detail', { p_routine_id: id, p_user_id: session.user.id })
-      .then(({ data }) => {
-        if (data) {
-          setRoutine(data);
-          const c = data.chunks || [];
-          setChunks(c);
-          if (chunkId && chunkId !== 'full') {
-            const found = c.find((ch: any) => ch.id === chunkId);
-            if (found) setChunk(found);
-          } else {
-            // full routine: use first chunk clip as reference
-            if (c.length > 0) setChunk(c[0]);
-          }
+    async function loadRoutine() {
+      if (!id) { setLoadingData(false); return; }
+      let data = null;
+      // Try Supabase first
+      if (session?.user?.id) {
+        const res = await supabase.rpc('rpc_get_routine_detail', { p_routine_id: id, p_user_id: session.user.id });
+        if (res.data) data = res.data;
+      }
+      // Fallback: localStorage
+      if (!data) {
+        try {
+          const stored = localStorage.getItem(`taal-local-routine-${id}`);
+          if (stored) data = JSON.parse(stored);
+        } catch { /* ignore */ }
+      }
+      if (data) {
+        setRoutine(data);
+        const c = data.chunks || [];
+        setChunks(c);
+        if (chunkId && chunkId !== 'full') {
+          const found = c.find((ch: any) => ch.id === chunkId || String(ch.chunk_index) === chunkId);
+          if (found) setChunk(found);
+          else if (c.length > 0) setChunk(c[0]);
+        } else {
+          if (c.length > 0) setChunk(c[0]);
         }
-        setLoadingData(false);
-      })
-      .catch(() => setLoadingData(false));
+      }
+      setLoadingData(false);
+    }
+    loadRoutine();
   }, [id, chunkId, session]);
 
   const isFullRoutine = chunkId === 'full';
