@@ -227,6 +227,42 @@ export default function Upload() {
         }
       } catch { /* Supabase not available */ }
 
+      // Save routine to localStorage (for guest/offline mode)
+      try {
+        const stored = JSON.parse(localStorage.getItem('taal-local-routines') || '[]');
+        stored.unshift({
+          id: `local-${Date.now()}`,
+          title: routineTitle || videoFile.name.replace(/\.[^/.]+$/, ""),
+          style_tag: styleTag,
+          thumbnail_url: thumbnailUrl || '',
+          chunk_count: finalChunks.length,
+          duration_seconds: Math.round(dur),
+          last_score: null,
+          last_practiced_at: new Date().toISOString(),
+          created_at: new Date().toISOString(),
+        });
+        localStorage.setItem('taal-local-routines', JSON.stringify(stored.slice(0, 20)));
+        // Also store detail for individual viewing
+        localStorage.setItem(`taal-local-routine-${stored[0].id}`, JSON.stringify({
+          id: stored[0].id,
+          title: stored[0].title,
+          style_tag: styleTag,
+          thumbnail_url: thumbnailUrl || '',
+          chunk_count: finalChunks.length,
+          chunks: finalChunks.map((c: any, i: number) => ({
+            id: `ch-${i}`,
+            chunk_index: i,
+            start_time_ms: c.start_time_ms,
+            end_time_ms: c.end_time_ms,
+            description: c.description,
+            clip_url: c.clip_url,
+          })),
+          duration_seconds: Math.round(dur),
+          instructor: 'You',
+          difficulty: styleTag,
+        }));
+      } catch { /* localStorage not available */ }
+
       clearTimeout(pipelineTimeout);
       setProgress(100);
       setPipelineState('DONE');

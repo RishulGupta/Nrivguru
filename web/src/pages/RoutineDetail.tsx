@@ -25,17 +25,22 @@ export default function RoutineDetail() {
   const [routine, setRoutine] = useState<any>(null);
 
   useEffect(() => {
-    if (id && session?.user?.id) {
-      supabase.rpc('rpc_get_routine_detail', { p_routine_id: id, p_user_id: session.user.id })
-        .then(({ data }) => {
-          if (data) {
-            setRoutine(data);
-          } else {
-            // Fallback for mock/featured routines which aren't in DB
-            setRoutine(MOCK_ROUTINE);
-          }
-        });
+    async function loadRoutine() {
+      if (!id) return;
+      // Try Supabase first
+      if (session?.user?.id) {
+        const { data } = await supabase.rpc('rpc_get_routine_detail', { p_routine_id: id, p_user_id: session.user.id });
+        if (data) { setRoutine(data); return; }
+      }
+      // Fallback: localStorage (guest/offline mode)
+      try {
+        const stored = localStorage.getItem(`taal-local-routine-${id}`);
+        if (stored) { setRoutine(JSON.parse(stored)); return; }
+      } catch { /* ignore */ }
+      // Ultimate fallback: mock routines
+      setRoutine(MOCK_ROUTINE);
     }
+    loadRoutine();
   }, [id, session]);
 
   if (!routine) return <div className="min-h-screen bg-background flex items-center justify-center text-white">Loading...</div>;
@@ -62,12 +67,14 @@ export default function RoutineDetail() {
           <div className="max-w-4xl mx-auto">
             <div className="flex items-center gap-3 mb-2">
               <span className="bg-primary/20 text-primary border border-primary/30 px-3 py-1 rounded-full text-xs font-bold tracking-wider uppercase">
-                {routine.difficulty}
+                {routine.style_tag || routine.difficulty || 'Dance'}
               </span>
-              <span className="text-muted-foreground text-sm font-semibold">{routine.duration}</span>
+              <span className="text-muted-foreground text-sm font-semibold">
+                {routine.duration_seconds ? `${Math.round(routine.duration_seconds / 60)}:${String(routine.duration_seconds % 60).padStart(2, '0')}` : routine.duration || ''}
+              </span>
             </div>
             <h1 className="text-4xl md:text-5xl font-outfit font-bold text-white mb-2">{routine.title}</h1>
-            <p className="text-xl text-gray-300">Instructor: {routine.instructor}</p>
+            <p className="text-xl text-gray-300">{routine.instructor ? `Instructor: ${routine.instructor}` : `${routine.chunk_count || routine.chunks?.length || 0} moves`}</p>
           </div>
         </div>
       </div>

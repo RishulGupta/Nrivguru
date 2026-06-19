@@ -20,12 +20,18 @@ export default function Home() {
   const isInstructor = profile?.is_instructor || false;
 
   useEffect(() => {
-    if (session?.user?.id) {
-      supabase.rpc('rpc_get_my_routines', { p_user_id: session.user.id })
-        .then(({ data }) => {
-          if (data) setMyRoutines(data);
-        });
+    async function loadRoutines() {
+      if (session?.user?.id) {
+        const { data } = await supabase.rpc('rpc_get_my_routines', { p_user_id: session.user.id });
+        if (data && data.length > 0) { setMyRoutines(data); return; }
+      }
+      // Fallback: load local routines (for guest / offline mode)
+      try {
+        const stored = localStorage.getItem('taal-local-routines');
+        if (stored) setMyRoutines(JSON.parse(stored));
+      } catch { /* ignore */ }
     }
+    loadRoutines();
   }, [session]);
 
   return (
