@@ -1,43 +1,46 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Inter", sans-serif;
+  --font-outfit: "Outfit", sans-serif;
+
+  --color-background: hsl(255 35% 5%);
+  --color-foreground: hsl(210 40% 98%);
+
+  --color-card: hsl(255 30% 8%);
+  --color-card-foreground: hsl(210 40% 98%);
+
+  --color-popover: hsl(255 30% 8%);
+  --color-popover-foreground: hsl(210 40% 98%);
+
+  --color-primary: hsl(280 100% 65%);
+  --color-primary-foreground: hsl(210 40% 98%);
+
+  --color-secondary: hsl(255 30% 15%);
+  --color-secondary-foreground: hsl(210 40% 98%);
+
+  --color-muted: hsl(255 30% 15%);
+  --color-muted-foreground: hsl(255 20% 65%);
+
+  --color-accent: hsl(320 100% 60%);
+  --color-accent-foreground: hsl(210 40% 98%);
+
+  --color-destructive: hsl(0 84% 60%);
+  --color-destructive-foreground: hsl(210 40% 98%);
+
+  --color-border: hsl(255 30% 18%);
+  --color-input: hsl(255 30% 18%);
+  --color-ring: hsl(280 100% 65%);
+
+  --radius: 0.75rem;
+}
 
 @layer base {
   :root {
-    --background: 255 35% 5%; /* Very dark violet/indigo #0B0813 */
-    --foreground: 210 40% 98%;
-
-    --card: 255 30% 8%;
-    --card-foreground: 210 40% 98%;
-
-    --popover: 255 30% 8%;
-    --popover-foreground: 210 40% 98%;
-
-    --primary: 280 100% 65%; /* Neon purple */
-    --primary-foreground: 210 40% 98%;
-
-    --secondary: 255 30% 15%;
-    --secondary-foreground: 210 40% 98%;
-
-    --muted: 255 30% 15%;
-    --muted-foreground: 255 20% 65%;
-
-    --accent: 320 100% 60%; /* Neon pink accent */
-    --accent-foreground: 210 40% 98%;
-
-    --destructive: 0 84% 60%;
-    --destructive-foreground: 210 40% 98%;
-
-    --border: 255 30% 18%;
-    --input: 255 30% 18%;
-    --ring: 280 100% 65%;
-
-    --radius: 0.75rem;
+    --primary: 280 100% 65%;
   }
 
-  * {
-    @apply border-border;
-  }
+
   body {
     @apply bg-background text-foreground font-sans antialiased overflow-x-hidden;
     background-image: radial-gradient(circle at top right, rgba(147, 51, 234, 0.15), transparent 40%),
