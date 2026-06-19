@@ -1,4 +1,4 @@
-import React, { useCallback, useRef } from 'react';
+import React, { useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useUploadStore } from '../store/uploadStore';
 import { extractThumbnail, chunkVideoWithAI } from '../utils/videoProcessor';
@@ -41,18 +41,18 @@ export default function Upload() {
       setProgress(10);
       
       // 1. Extract Thumbnail
-      const thumbnail = await extractThumbnail(videoFile);
+      await extractThumbnail(videoFile);
       setProgress(20);
 
       // 2. Chunking with AI
       setPipelineState('CHUNKING');
       // Assume video is around 60 seconds for mock duration
-      const chunks = await chunkVideoWithAI(videoFile, 60);
+      await chunkVideoWithAI(videoFile, 60);
       setProgress(40);
 
       // 3. Extracting Poses
       setPipelineState('ANALYZING_POSE');
-      const poseFrames = await extractFrames(videoFile, (p) => {
+      await extractFrames(videoFile, (p) => {
         // Map 0-100 to 40-90 progress range
         setProgress(40 + (p * 0.5));
       });

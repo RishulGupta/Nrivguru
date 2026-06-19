@@ -1,8 +1,13 @@
 export class CanvasRecorder {
   private mediaRecorder: MediaRecorder | null = null;
   private recordedChunks: Blob[] = [];
+  private canvas: HTMLCanvasElement;
+  private frameRate: number;
 
-  constructor(private canvas: HTMLCanvasElement, private frameRate: number = 30) {}
+  constructor(canvas: HTMLCanvasElement, frameRate: number = 30) {
+    this.canvas = canvas;
+    this.frameRate = frameRate;
+  }
 
   start() {
     this.recordedChunks = [];

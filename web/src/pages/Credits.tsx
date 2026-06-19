@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { ArrowLeft, Check, ShieldCheck, Zap } from 'lucide-react';
-import { useAuthStore } from '../store/useStore';
+
 
 const PACKAGES = [
   { id: 'starter', name: 'Starter Pack', credits: 10, price: '$4.99', popular: false },
@@ -11,7 +11,6 @@ const PACKAGES = [
 
 export default function Credits() {
   const navigate = useNavigate();
-  const session = useAuthStore((state) => state.session);
   // Mock global user credits using local state for demo purposes
   const [userCredits, setUserCredits] = useState(0); 
   

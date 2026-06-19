@@ -38,7 +38,7 @@ export async function extractThumbnail(videoFile: File): Promise<string> {
  * Mock chunking function to simulate Gemini's logic.
  * Real implementation would send the video/audio to Gemini and return optimal segments.
  */
-export async function chunkVideoWithAI(videoFile: File, duration: number) {
+export async function chunkVideoWithAI(_videoFile: File, duration: number) {
   return new Promise((resolve) => {
     setTimeout(() => {
       // Create some dummy chunks based on duration

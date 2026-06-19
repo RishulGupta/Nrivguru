@@ -11,7 +11,6 @@ const MOCK_ROUTINES = [
 
 export default function Home() {
   const navigate = useNavigate();
-  const session = useAuthStore((state) => state.session);
   const credits = useAuthStore((state) => state.credits);
   const clearAuth = useAuthStore((state) => state.clearAuth);
 

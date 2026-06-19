@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 import { useAuthStore } from '../store/useStore';
-import { Mail, Lock, User, Github } from 'lucide-react'; // Fallback to Github icon if Google is missing or we want alternative
+import { Mail, Lock, User } from 'lucide-react'; // Fallback to Github icon if Google is missing or we want alternative
 
 export default function Auth() {
   const navigate = useNavigate();

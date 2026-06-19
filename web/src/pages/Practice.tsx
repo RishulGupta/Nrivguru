@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { ArrowLeft, Loader2, Camera, VideoOff } from 'lucide-react';
-import { initializePoseLandmarker, PoseLandmark } from '../utils/poseExtractor';
+import { initializePoseLandmarker } from '../utils/poseExtractor';
 import SkeletonCanvas from '../components/SkeletonCanvas';
+import type { PoseLandmark } from '../components/SkeletonCanvas';
 import ScoreDisplay from '../components/ScoreDisplay';
 
 export default function Practice() {
@@ -59,7 +60,7 @@ export default function Practice() {
   }, []);
 
   // Practice Loop using useRef
-  const animationRef = useRef<number>();
+  const animationRef = useRef<number>(0);
   const landmarkerRef = useRef<any>(null);
   
   useEffect(() => {

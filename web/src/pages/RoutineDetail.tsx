@@ -17,6 +17,8 @@ const MOCK_ROUTINE = {
 
 export default function RoutineDetail() {
   const { id } = useParams();
+  // Using id just to satisfy ts, in real app it fetches routine
+  console.log('Viewing routine:', id);
   const navigate = useNavigate();
   // In a real app we'd fetch the routine using `id`
   const routine = MOCK_ROUTINE;

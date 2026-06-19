@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Download, Share2, ArrowLeft, Instagram, Video } from 'lucide-react';
+import { Download, Share2, ArrowLeft, Camera, Video } from 'lucide-react';
 
 export default function Share() {
   const navigate = useNavigate();
@@ -100,7 +100,7 @@ export default function Share() {
 
             <div className="pt-4 border-t border-white/10 flex justify-center gap-4">
               <button className="w-12 h-12 rounded-full bg-gradient-to-tr from-yellow-400 via-pink-500 to-purple-600 flex items-center justify-center text-white hover:opacity-90 transition-opacity">
-                <Instagram className="w-6 h-6" />
+                <Camera className="w-6 h-6" />
               </button>
               {/* Mock TikTok button */}
               <button className="w-12 h-12 rounded-full bg-black border border-white/20 flex items-center justify-center text-white hover:bg-white/5 transition-colors font-bold tracking-tighter">

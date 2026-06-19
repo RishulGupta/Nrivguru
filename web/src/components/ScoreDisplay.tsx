@@ -1,4 +1,3 @@
-import React from 'react';
 import { Target, Activity, Flame } from 'lucide-react';
 
 interface ScoreDisplayProps {

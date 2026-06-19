@@ -1,4 +1,4 @@
-import React, { useEffect, useRef } from 'react';
+import { useEffect, useRef } from 'react';
 
 // Using minimal typing from shared types we built in Phase 2
 // Assuming PoseLandmark has {x,y,z,visibility}
