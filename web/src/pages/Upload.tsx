@@ -91,6 +91,13 @@ export default function Upload() {
     if (!videoFile) return;
     abortRef.current = false;
 
+    // Overall pipeline timeout — 5 minutes max
+    const pipelineTimeout = setTimeout(() => {
+      abortRef.current = true;
+      setError('Pipeline timed out after 5 minutes. Try a shorter video.');
+      setPipelineState('IDLE');
+    }, 300000);
+
     try {
       const session = useAuthStore.getState().session;
       if (!session) throw new Error('Not authenticated');
@@ -220,10 +227,12 @@ export default function Upload() {
         }
       } catch { /* Supabase not available */ }
 
+      clearTimeout(pipelineTimeout);
       setProgress(100);
       setPipelineState('DONE');
 
     } catch (err: any) {
+      clearTimeout(pipelineTimeout);
       if (err.message === 'Cancelled') {
         // Clean up partial uploads
         for (const path of cancelCleanup) {
