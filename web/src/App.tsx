@@ -14,6 +14,7 @@ import Share from './pages/Share';
 import Credits from './pages/Credits';
 import History from './pages/History';
 import InstructorPortal from './pages/InstructorPortal';
+import Settings from './pages/Settings';
 
 // Route Guards
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
@@ -161,6 +162,12 @@ function App() {
         <Route path="/instructor" element={
           <ProtectedRoute>
             <InstructorPortal />
+          </ProtectedRoute>
+        } />
+
+        <Route path="/settings" element={
+          <ProtectedRoute>
+            <Settings />
           </ProtectedRoute>
         } />
         

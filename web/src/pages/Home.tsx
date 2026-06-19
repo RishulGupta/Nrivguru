@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuthStore } from '../store/useStore';
 import { supabase } from '../lib/supabase';
-import { LogOut, Play, Upload, Star, Clock, Activity, Zap, User } from 'lucide-react';
+import { Play, Upload, Star, Clock, Activity, Zap, User, Settings as SettingsIcon } from 'lucide-react';
 
 const FEATURED_ROUTINES = [
   { id: '1', title: 'Beginner Hip Hop', instructor: 'Alex M.', duration: '2:30', difficulty: 'Beginner', plays: 1250, thumbnail: 'https://images.unsplash.com/photo-1547153760-18fc86324498?auto=format&fit=crop&q=80&w=800' },
@@ -14,7 +14,6 @@ export default function Home() {
   const navigate = useNavigate();
   const session = useAuthStore((state) => state.session);
   const credits = useAuthStore((state) => state.credits);
-  const clearAuth = useAuthStore((state) => state.clearAuth);
   
   const [myRoutines, setMyRoutines] = useState<any[]>([]);
 
@@ -26,12 +25,6 @@ export default function Home() {
         });
     }
   }, [session]);
-
-  const handleLogout = async () => {
-    await supabase.auth.signOut();
-    clearAuth();
-    navigate('/auth');
-  };
 
   return (
     <div className="min-h-screen bg-background">
@@ -75,10 +68,11 @@ export default function Home() {
             </div>
           </div>
           <button 
-            onClick={handleLogout}
+            onClick={() => navigate('/settings')}
             className="p-2 hover:bg-white/10 rounded-full transition-colors text-muted-foreground"
+            title="Settings"
           >
-            <LogOut className="w-5 h-5" />
+            <SettingsIcon className="w-5 h-5" />
           </button>
         </div>
       </header>

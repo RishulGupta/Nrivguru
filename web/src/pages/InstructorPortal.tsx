@@ -15,7 +15,7 @@ export default function InstructorPortal() {
   useEffect(() => {
     if (isInstructor && profile) {
       const fetchDashboard = async () => {
-        const { data, error } = await supabase.rpc('rpc_get_instructor_dashboard', {
+        const { data } = await supabase.rpc('rpc_get_instructor_dashboard', {
           p_instructor_id: profile.id
         });
         if (data) setDashboardData(data);

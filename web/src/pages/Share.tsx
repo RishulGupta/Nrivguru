@@ -1,10 +1,10 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Download, Share2, ArrowLeft, Camera, Video } from 'lucide-react';
 
 export default function Share() {
   const navigate = useNavigate();
-  // Mock recorded blob URL that would be passed via state or context in a real app
+  const [videoUrl, setVideoUrl] = useState<string | null>(null);
   const [isExporting, setIsExporting] = useState(false);
   const [exportMode, setExportMode] = useState<'skeleton' | 'silhouette' | 'score'>('skeleton');
   const canvasRef = useRef<HTMLCanvasElement>(null);
