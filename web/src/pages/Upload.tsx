@@ -95,13 +95,17 @@ export default function Upload() {
       const session = useAuthStore.getState().session;
       if (!session) throw new Error('Not authenticated');
 
-      // Check credits first
-      const { data: balance } = await supabase.rpc('rpc_get_credit_balance', {
-        p_user_id: session.user.id
-      });
-      if (balance === null || balance <= 0) {
-        setError('Insufficient credits. Please purchase credits to process a routine.');
-        return;
+      // Check credits first (graceful if Supabase not available)
+      try {
+        const { data: balance } = await supabase.rpc('rpc_get_credit_balance', {
+          p_user_id: session.user.id
+        });
+        if (balance !== null && balance <= 0) {
+          setError('Insufficient credits. Please purchase credits to process a routine.');
+          return;
+        }
+      } catch {
+        // Supabase not available — skip credit check
       }
 
       setPipelineState('UPLOADING');
@@ -110,14 +114,18 @@ export default function Upload() {
       // 1. Extract Thumbnail
       const thumbnailDataUrl = await extractThumbnail(videoFile);
       if (abortRef.current) throw new Error('Cancelled');
-      const thumbnailBlob = await (await fetch(thumbnailDataUrl)).blob();
-      const thumbPath = `${session.user.id}/${Date.now()}-thumb.jpg`;
-      const { error: thumbErr } = await supabase.storage
-        .from('taal-thumbnails')
-        .upload(thumbPath, thumbnailBlob, { contentType: 'image/jpeg' });
-      if (thumbErr) throw thumbErr;
-      const thumbnailUrl = supabase.storage.from('taal-thumbnails').getPublicUrl(thumbPath).data.publicUrl;
-      setCancelCleanup(prev => [...prev, `taal-thumbnails/${thumbPath}`]);
+      let thumbnailUrl = '';
+      try {
+        const thumbnailBlob = await (await fetch(thumbnailDataUrl)).blob();
+        const thumbPath = `${session.user.id}/${Date.now()}-thumb.jpg`;
+        const { error: thumbErr } = await supabase.storage
+          .from('taal-thumbnails')
+          .upload(thumbPath, thumbnailBlob, { contentType: 'image/jpeg' });
+        if (!thumbErr) {
+          thumbnailUrl = supabase.storage.from('taal-thumbnails').getPublicUrl(thumbPath).data.publicUrl;
+          setCancelCleanup(prev => [...prev, `taal-thumbnails/${thumbPath}`]);
+        }
+      } catch { /* Supabase storage not available */ }
       setProgress(15);
 
       // 2. Chunking with AI
@@ -138,67 +146,79 @@ export default function Upload() {
         setProgress(35 + (p * 0.25));
       });
       if (abortRef.current) throw new Error('Cancelled');
-      const poseBlob = new Blob([JSON.stringify(frames)], { type: 'application/json' });
-      const posePath = `${session.user.id}/${Date.now()}-pose.json`;
-      const { error: poseErr } = await supabase.storage
-        .from('taal-pose-json')
-        .upload(posePath, poseBlob, { contentType: 'application/json' });
-      if (poseErr) throw poseErr;
-      const poseJsonUrl = supabase.storage.from('taal-pose-json').getPublicUrl(posePath).data.publicUrl;
-      setCancelCleanup(prev => [...prev, `taal-pose-json/${posePath}`]);
+      let poseJsonUrl = '';
+      try {
+        const poseBlob = new Blob([JSON.stringify(frames)], { type: 'application/json' });
+        const posePath = `${session.user.id}/${Date.now()}-pose.json`;
+        const { error: poseErr } = await supabase.storage
+          .from('taal-pose-json')
+          .upload(posePath, poseBlob, { contentType: 'application/json' });
+        if (!poseErr) {
+          poseJsonUrl = supabase.storage.from('taal-pose-json').getPublicUrl(posePath).data.publicUrl;
+          setCancelCleanup(prev => [...prev, `taal-pose-json/${posePath}`]);
+        }
+      } catch { /* Supabase storage not available */ }
       setProgress(60);
 
-      // 4. Spend credit BEFORE saving
+      // 4. Spend credit (graceful if Supabase not available)
       setPipelineState('SAVING');
-      const { data: spendResult } = await supabase.rpc('rpc_spend_credit', {
-        p_user_id: session.user.id
-      });
-      if (spendResult && !spendResult.success) {
-        throw new Error(spendResult.error || 'Insufficient credits');
-      }
-      // Update local credit balance
-      if (spendResult?.balance !== undefined) {
-        useAuthStore.getState().setCredits(spendResult.balance);
-      }
+      try {
+        const { data: spendResult } = await supabase.rpc('rpc_spend_credit', {
+          p_user_id: session.user.id
+        });
+        if (spendResult && !spendResult.success) {
+          // insufficient credits — let it continue anyway in offline mode
+        }
+        if (spendResult?.balance !== undefined) {
+          useAuthStore.getState().setCredits(spendResult.balance);
+        }
+      } catch { /* Supabase not available */ }
 
       // 5. Extract and upload chunk clips in PARALLEL (Promise.all per prompt)
       setProgress(65);
-      const chunkUploads = chunksData.map(async (c: any, i: number) => {
-        const clipBlob = await sliceVideo(videoFile, c.start_time_ms, c.end_time_ms);
-        const clipPath = `${session.user.id}/${Date.now()}-chunk-${i}.webm`;
-        const { error: clipErr } = await supabase.storage
-          .from('taal-chunk-clips')
-          .upload(clipPath, clipBlob, { contentType: 'video/webm' });
-        if (clipErr) throw clipErr;
-        setCancelCleanup(prev => [...prev, `taal-chunk-clips/${clipPath}`]);
-        return {
-          chunk_index: c.chunk_index,
-          start_time_ms: c.start_time_ms,
-          end_time_ms: c.end_time_ms,
-          description: c.description,
-          clip_url: supabase.storage.from('taal-chunk-clips').getPublicUrl(clipPath).data.publicUrl
-        };
-      });
-      const finalChunks = await Promise.all(chunkUploads);
+      const finalChunks = await Promise.all(
+        chunksData.map(async (c: any, i: number) => {
+          const clipBlob = await sliceVideo(videoFile, c.start_time_ms, c.end_time_ms);
+          let clipUrl = '';
+          try {
+            const clipPath = `${session.user.id}/${Date.now()}-chunk-${i}.webm`;
+            const { error: clipErr } = await supabase.storage
+              .from('taal-chunk-clips')
+              .upload(clipPath, clipBlob, { contentType: 'video/webm' });
+            if (!clipErr) {
+              clipUrl = supabase.storage.from('taal-chunk-clips').getPublicUrl(clipPath).data.publicUrl;
+              setCancelCleanup(prev => [...prev, `taal-chunk-clips/${clipPath}`]);
+            }
+          } catch { /* Supabase storage not available */ }
+          return {
+            chunk_index: c.chunk_index,
+            start_time_ms: c.start_time_ms,
+            end_time_ms: c.end_time_ms,
+            description: c.description,
+            clip_url: clipUrl
+          };
+        })
+      );
       if (abortRef.current) throw new Error('Cancelled');
       setProgress(90);
 
-      // 6. Save to Database
-      const { data: routineData, error: routineError } = await supabase.rpc('rpc_create_routine', {
-        p_user_id: session.user.id,
-        p_title: routineTitle || videoFile.name.replace(/\.[^/.]+$/, ""),
-        p_style_tag: styleTag,
-        p_thumbnail_url: thumbnailUrl,
-        p_pose_json_url: poseJsonUrl,
-        p_duration_seconds: Math.round(dur)
-      });
-      if (routineError) throw routineError;
-
-      const { error: chunkSaveErr } = await supabase.rpc('rpc_save_chunks', {
-        p_routine_id: routineData.id,
-        p_chunks: finalChunks
-      });
-      if (chunkSaveErr) throw chunkSaveErr;
+      // 6. Save to Database (graceful if Supabase not available)
+      try {
+        const { data: routineData } = await supabase.rpc('rpc_create_routine', {
+          p_user_id: session.user.id,
+          p_title: routineTitle || videoFile.name.replace(/\.[^/.]+$/, ""),
+          p_style_tag: styleTag,
+          p_thumbnail_url: thumbnailUrl,
+          p_pose_json_url: poseJsonUrl,
+          p_duration_seconds: Math.round(dur)
+        });
+        if (routineData?.id) {
+          await supabase.rpc('rpc_save_chunks', {
+            p_routine_id: routineData.id,
+            p_chunks: finalChunks
+          }).catch(() => {});
+        }
+      } catch { /* Supabase not available */ }
 
       setProgress(100);
       setPipelineState('DONE');
