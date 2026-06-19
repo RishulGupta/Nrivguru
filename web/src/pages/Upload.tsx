@@ -188,6 +188,7 @@ export default function Upload() {
           const clipBlob = await sliceVideo(videoFile, c.start_time_ms, c.end_time_ms);
           let clipUrl = '';
           try {
+            // Try Supabase storage first
             const clipPath = `${session.user.id}/${Date.now()}-chunk-${i}.webm`;
             const { error: clipErr } = await supabase.storage
               .from('taal-chunk-clips')
@@ -195,8 +196,11 @@ export default function Upload() {
             if (!clipErr) {
               clipUrl = supabase.storage.from('taal-chunk-clips').getPublicUrl(clipPath).data.publicUrl;
               setCancelCleanup(prev => [...prev, `taal-chunk-clips/${clipPath}`]);
-            }
-          } catch { /* Supabase storage not available */ }
+            } else throw clipErr;
+          } catch {
+            // Fallback: create local blob URL from the clip blob
+            clipUrl = URL.createObjectURL(clipBlob);
+          }
           return {
             chunk_index: c.chunk_index,
             start_time_ms: c.start_time_ms,
