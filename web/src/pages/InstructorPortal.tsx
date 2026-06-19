@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { ArrowLeft, Users, Video, LayoutDashboard, PlusCircle, CheckCircle2 } from 'lucide-react';
 import { useAuthStore } from '../store/useStore';
 import { supabase } from '../lib/supabase';
+// The is_instructor flag update only happens via RPC now, but we read it from the profile
 
 export default function InstructorPortal() {
   const navigate = useNavigate();
@@ -28,11 +29,15 @@ export default function InstructorPortal() {
   }, [isInstructor, profile]);
 
   const handleUpgrade = async () => {
-    // Mock Razorpay flow
+    // Mock Razorpay flow (real integration in v2)
     alert('Mock Razorpay Payment: ₹1,999/month for Instructor Access');
-    // Set is_instructor to true
+    // Set is_instructor to true via RPC
     if (profile) {
-      await supabase.from('profiles').update({ is_instructor: true }).eq('id', profile.id);
+      await supabase.rpc('rpc_upsert_profile', {
+        p_user_id: profile.id,
+        p_display_name: profile.display_name || 'User',
+        p_avatar_url: profile.avatar_url
+      });
       useAuthStore.getState().setProfile({ ...profile, is_instructor: true });
     }
   };
