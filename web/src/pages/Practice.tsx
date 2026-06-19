@@ -98,14 +98,30 @@ export default function Practice() {
   useEffect(() => {
     const v = refVideoRef.current;
     if (!v) return;
-    // use chunk clip from supabase or fallback to routine video
-    const urlToLoad = chunk?.clip_url || null;
+    // 1. Try chunk clip URL (from supabase or blob)
+    // 2. Fallback: use original video blob URL with time seeking
+    const urlToLoad = chunk?.clip_url || routine?.video_blob_url || null;
     if (urlToLoad && urlToLoad !== v.getAttribute('data-loaded')) {
       v.src = urlToLoad;
       v.setAttribute('data-loaded', urlToLoad);
       v.load();
+      // If using original video with time range, seek to chunk start
+      if (!chunk?.clip_url && chunk && v.readyState >= 1) {
+        v.currentTime = (chunk.start_time_ms || 0) / 1000;
+      }
     }
-  }, [chunk]);
+    // Set video time range bounds for playback
+    if (urlToLoad && chunk && !chunk?.clip_url) {
+      const onTimeUpdate = () => {
+        if (chunk.end_time_ms && v.currentTime * 1000 >= chunk.end_time_ms) {
+          v.currentTime = (chunk.start_time_ms || 0) / 1000;
+          v.play();
+        }
+      };
+      v.addEventListener('timeupdate', onTimeUpdate);
+      return () => v.removeEventListener('timeupdate', onTimeUpdate);
+    }
+  }, [chunk, routine]);
 
   // Camera setup
   useEffect(() => {

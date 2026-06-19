@@ -6,6 +6,7 @@ import { extractFrames } from '../utils/poseExtractor';
 import { Upload as UploadIcon, CheckCircle, AlertCircle, Play, Loader2 } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 import { useAuthStore } from '../store/useStore';
+import { setOriginalVideo, getOriginalVideoUrl } from '../utils/videoStore';
 
 const STYLE_OPTIONS = [
   'Bollywood', 'Hip-Hop', 'K-Pop', 'Classical Indian',
@@ -74,6 +75,7 @@ export default function Upload() {
         return;
       }
       setVideoFile(file);
+      setOriginalVideo(URL.createObjectURL(file));
       setRoutineTitle(file.name.replace(/\.[^/.]+$/, ""));
       setError(null);
       // Get duration
@@ -265,6 +267,7 @@ export default function Upload() {
           duration_seconds: Math.round(dur),
           instructor: 'You',
           difficulty: styleTag,
+          video_blob_url: getOriginalVideoUrl(),
         }));
       } catch { /* localStorage not available */ }
 
