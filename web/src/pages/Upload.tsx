@@ -1,9 +1,11 @@
 import React, { useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useUploadStore } from '../store/uploadStore';
-import { extractThumbnail, chunkVideoWithAI } from '../utils/videoProcessor';
+import { extractThumbnail, chunkVideoWithAI, sliceVideo } from '../utils/videoProcessor';
 import { extractFrames } from '../utils/poseExtractor';
 import { Upload as UploadIcon, CheckCircle, AlertCircle, Play, Loader2 } from 'lucide-react';
+import { supabase } from '../lib/supabase';
+import { useAuthStore } from '../store/useStore';
 
 export default function Upload() {
   const navigate = useNavigate();
@@ -41,27 +43,84 @@ export default function Upload() {
       setProgress(10);
       
       // 1. Extract Thumbnail
-      await extractThumbnail(videoFile);
+      const session = useAuthStore.getState().session;
+      const thumbnailDataUrl = await extractThumbnail(videoFile);
+      const thumbnailBlob = await (await fetch(thumbnailDataUrl)).blob();
+      
+      const thumbPath = `${session?.user?.id}/${Date.now()}-thumb.jpg`;
+      const { error: thumbErr } = await supabase.storage
+        .from('taal-thumbnails')
+        .upload(thumbPath, thumbnailBlob, { contentType: 'image/jpeg' });
+      if (thumbErr) throw thumbErr;
+      const thumbnailUrl = supabase.storage.from('taal-thumbnails').getPublicUrl(thumbPath).data.publicUrl;
       setProgress(20);
 
       // 2. Chunking with AI
       setPipelineState('CHUNKING');
-      // Assume video is around 60 seconds for mock duration
-      await chunkVideoWithAI(videoFile, 60);
+      const videoDuration = await new Promise<number>((resolve) => {
+        const v = document.createElement('video');
+        v.src = URL.createObjectURL(videoFile);
+        v.onloadedmetadata = () => { resolve(v.duration); URL.revokeObjectURL(v.src); };
+      });
+      const chunksData = await chunkVideoWithAI(videoFile, videoDuration, 'other');
       setProgress(40);
 
       // 3. Extracting Poses
       setPipelineState('ANALYZING_POSE');
-      await extractFrames(videoFile, (p) => {
-        // Map 0-100 to 40-90 progress range
-        setProgress(40 + (p * 0.5));
+      const frames = await extractFrames(videoFile, (p) => {
+        setProgress(40 + (p * 0.3));
       });
-      setProgress(90);
+      const poseBlob = new Blob([JSON.stringify(frames)], { type: 'application/json' });
+      const posePath = `${session?.user?.id}/${Date.now()}-pose.json`;
+      const { error: poseErr } = await supabase.storage
+        .from('taal-pose-json')
+        .upload(posePath, poseBlob, { contentType: 'application/json' });
+      if (poseErr) throw poseErr;
+      const poseJsonUrl = supabase.storage.from('taal-pose-json').getPublicUrl(posePath).data.publicUrl;
+      setProgress(70);
 
-      // 4. Save to Database
+      // 4. Extracting and uploading Chunk Clips
       setPipelineState('SAVING');
-      // Mock API delay for saving to Supabase
-      await new Promise(resolve => setTimeout(resolve, 1500));
+      const finalChunks = [];
+      for (let i = 0; i < chunksData.length; i++) {
+        const c = chunksData[i];
+        const clipBlob = await sliceVideo(videoFile, c.start_time_ms, c.end_time_ms);
+        const clipPath = `${session?.user?.id}/${Date.now()}-chunk-${i}.webm`;
+        const { error: clipErr } = await supabase.storage
+          .from('taal-chunk-clips')
+          .upload(clipPath, clipBlob, { contentType: 'video/webm' });
+        if (clipErr) throw clipErr;
+        
+        finalChunks.push({
+          chunk_index: c.chunk_index,
+          start_time_ms: c.start_time_ms,
+          end_time_ms: c.end_time_ms,
+          description: c.description,
+          clip_url: supabase.storage.from('taal-chunk-clips').getPublicUrl(clipPath).data.publicUrl
+        });
+        setProgress(70 + ((i + 1) / chunksData.length) * 20);
+      }
+
+      // 5. Save to Database
+      if (session) {
+        const { data: routineData, error: routineError } = await supabase.rpc('rpc_create_routine', {
+          p_user_id: session.user.id,
+          p_title: videoFile.name.replace(/\.[^/.]+$/, ""),
+          p_style_tag: 'other',
+          p_thumbnail_url: thumbnailUrl,
+          p_pose_json_url: poseJsonUrl,
+          p_duration_seconds: Math.round(videoDuration)
+        });
+
+        if (routineError) throw routineError;
+        
+        const { error: chunkSaveErr } = await supabase.rpc('rpc_save_chunks', {
+          p_routine_id: routineData.id,
+          p_chunks: finalChunks
+        });
+        if (chunkSaveErr) throw chunkSaveErr;
+      }
+
       
       setProgress(100);
       setPipelineState('DONE');

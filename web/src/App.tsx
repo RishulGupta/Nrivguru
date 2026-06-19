@@ -54,14 +54,39 @@ function App() {
   const setSession = useAuthStore((state) => state.setSession);
 
   useEffect(() => {
+    const fetchProfileData = async (userId: string, email?: string, metadata?: any) => {
+      let { data } = await supabase.rpc('rpc_get_profile', { p_user_id: userId });
+      if (!data) {
+        // Auto-create profile if missing
+        await supabase.rpc('rpc_upsert_profile', {
+          p_user_id: userId,
+          p_display_name: metadata?.username || email?.split('@')[0] || 'User'
+        });
+        await supabase.rpc('rpc_complete_onboarding', { p_user_id: userId });
+        const res = await supabase.rpc('rpc_get_profile', { p_user_id: userId });
+        data = res.data;
+      }
+      if (data) {
+        useAuthStore.getState().setProfile(data);
+        useAuthStore.getState().setCredits(data.credit_balance || 0);
+      }
+    };
+
     supabase.auth.getSession().then(({ data: { session } }) => {
       setSession(session);
+      if (session) fetchProfileData(session.user.id, session.user.email, session.user.user_metadata);
     });
 
     const {
       data: { subscription },
     } = supabase.auth.onAuthStateChange((_event, session) => {
       setSession(session);
+      if (session) {
+        fetchProfileData(session.user.id, session.user.email, session.user.user_metadata);
+      } else {
+        useAuthStore.getState().setProfile(null);
+        useAuthStore.getState().setCredits(0);
+      }
     });
 
     return () => subscription.unsubscribe();

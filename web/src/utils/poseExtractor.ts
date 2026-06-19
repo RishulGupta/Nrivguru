@@ -53,21 +53,32 @@ export async function extractFrames(
 
       if (!isProcessing && video.currentTime > 0) {
         isProcessing = true;
-        const startTimeMs = performance.now();
-        const result = landmarker.detectForVideo(video, startTimeMs);
         
-        if (result.landmarks && result.landmarks.length > 0) {
-          frames.push({
-            timestamp: video.currentTime,
-            landmarks: result.landmarks[0]
-          });
+        try {
+          // MediaPipe requires strictly increasing timestamps
+          let startTimeMs = Math.round(video.currentTime * 1000);
+          if (typeof (video as any)._lastVideoMs === 'number' && startTimeMs <= (video as any)._lastVideoMs) {
+            startTimeMs = (video as any)._lastVideoMs + 1;
+          }
+          (video as any)._lastVideoMs = startTimeMs;
+
+          const result = landmarker.detectForVideo(video, startTimeMs);
+          
+          if (result.landmarks && result.landmarks.length > 0) {
+            frames.push({
+              timestamp: video.currentTime,
+              landmarks: result.landmarks[0]
+            });
+          }
+          
+          if (onProgress && video.duration) {
+            onProgress((video.currentTime / video.duration) * 100);
+          }
+        } catch (error) {
+          console.warn('Pose extraction skipped a frame due to MediaPipe error:', error);
+        } finally {
+          isProcessing = false;
         }
-        
-        if (onProgress && video.duration) {
-          onProgress((video.currentTime / video.duration) * 100);
-        }
-        
-        isProcessing = false;
       }
 
       // Use requestVideoFrameCallback if available for precise frame tracking, fallback to requestAnimationFrame

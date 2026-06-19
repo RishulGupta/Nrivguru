@@ -1,9 +1,10 @@
+import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuthStore } from '../store/useStore';
 import { supabase } from '../lib/supabase';
 import { LogOut, Play, Upload, Star, Clock, Activity, Zap, User } from 'lucide-react';
 
-const MOCK_ROUTINES = [
+const FEATURED_ROUTINES = [
   { id: '1', title: 'Beginner Hip Hop', instructor: 'Alex M.', duration: '2:30', difficulty: 'Beginner', plays: 1250, thumbnail: 'https://images.unsplash.com/photo-1547153760-18fc86324498?auto=format&fit=crop&q=80&w=800' },
   { id: '2', title: 'Bollywood Basics', instructor: 'Priya S.', duration: '3:15', difficulty: 'Beginner', plays: 3420, thumbnail: 'https://images.unsplash.com/photo-1516997184976-54a4f89d3810?auto=format&fit=crop&q=80&w=800' },
   { id: '3', title: 'Advanced Popping', instructor: 'Marcus T.', duration: '1:45', difficulty: 'Advanced', plays: 890, thumbnail: 'https://images.unsplash.com/photo-1508700115892-45ecd05ae2ad?auto=format&fit=crop&q=80&w=800' },
@@ -11,8 +12,20 @@ const MOCK_ROUTINES = [
 
 export default function Home() {
   const navigate = useNavigate();
+  const session = useAuthStore((state) => state.session);
   const credits = useAuthStore((state) => state.credits);
   const clearAuth = useAuthStore((state) => state.clearAuth);
+  
+  const [myRoutines, setMyRoutines] = useState<any[]>([]);
+
+  useEffect(() => {
+    if (session?.user?.id) {
+      supabase.rpc('rpc_get_my_routines', { p_user_id: session.user.id })
+        .then(({ data }) => {
+          if (data) setMyRoutines(data);
+        });
+    }
+  }, [session]);
 
   const handleLogout = async () => {
     await supabase.auth.signOut();
@@ -87,14 +100,59 @@ export default function Home() {
         </section>
 
         {/* Library Grid */}
+        {myRoutines && myRoutines.length > 0 && (
+          <section className="mb-12">
+            <div className="flex items-center justify-between mb-6">
+              <h2 className="text-2xl font-outfit font-bold text-white">Your Library</h2>
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+              {myRoutines.map((routine) => (
+                <div 
+                  key={routine.id} 
+                  onClick={() => navigate(`/routine/${routine.id}`)}
+                  className="group glass rounded-2xl overflow-hidden border border-white/5 hover:border-primary/50 transition-all hover:shadow-[0_0_20px_rgba(147,51,234,0.15)] cursor-pointer"
+                >
+                  <div className="relative aspect-video overflow-hidden">
+                    <div className="absolute inset-0 bg-black/40 group-hover:bg-black/20 transition-colors z-10"></div>
+                    {routine.thumbnail_url ? (
+                      <img 
+                        src={routine.thumbnail_url} 
+                        alt={routine.title} 
+                        className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
+                      />
+                    ) : (
+                      <div className="w-full h-full bg-gray-800 flex items-center justify-center">
+                        <Play className="w-8 h-8 text-white/50" />
+                      </div>
+                    )}
+                    <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-20 w-12 h-12 rounded-full bg-white/20 backdrop-blur-md flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
+                      <Play className="w-5 h-5 text-white ml-1" />
+                    </div>
+                  </div>
+                  <div className="p-5">
+                    <h3 className="font-semibold text-lg text-white group-hover:text-primary transition-colors">{routine.title}</h3>
+                    <div className="flex items-center justify-between mt-4">
+                      <span className="text-sm text-muted-foreground">{routine.chunk_count} Chunks</span>
+                      <span className="text-xs font-medium px-2 py-1 bg-white/5 rounded-full text-gray-300">
+                        {routine.last_score ? `${routine.last_score}% Best` : 'Not practiced'}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </section>
+        )}
+
+        {/* Featured Grid */}
         <section>
           <div className="flex items-center justify-between mb-6">
-            <h2 className="text-2xl font-outfit font-bold text-white">Your Library</h2>
+            <h2 className="text-2xl font-outfit font-bold text-white">Featured Routines</h2>
             <button className="text-primary hover:text-primary/80 text-sm font-semibold">View All</button>
           </div>
           
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-            {MOCK_ROUTINES.map((routine) => (
+            {FEATURED_ROUTINES.map((routine) => (
               <div 
                 key={routine.id} 
                 onClick={() => navigate(`/routine/${routine.id}`)}

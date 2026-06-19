@@ -1,5 +1,8 @@
+import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { ArrowLeft, Activity, Target, Trophy, TrendingUp } from 'lucide-react';
+import { supabase } from '../lib/supabase';
+import { useAuthStore } from '../store/useStore';
 
 const MOCK_HISTORY = [
   { id: 1, routine: 'Beginner Hip Hop', chunk: 'Arm Wave Combo', score: 85, date: 'Today' },
@@ -10,6 +13,34 @@ const MOCK_HISTORY = [
 
 export default function History() {
   const navigate = useNavigate();
+  const session = useAuthStore(state => state.session);
+  const [history, setHistory] = useState<any[]>([]);
+
+  useEffect(() => {
+    if (session?.user?.id) {
+      supabase
+        .from('attempts')
+        .select('*, routines(title), chunks(description)')
+        .eq('user_id', session.user.id)
+        .order('created_at', { ascending: false })
+        .limit(10)
+        .then(({ data }) => {
+          if (data && data.length > 0) {
+            setHistory(data.map((a: any) => ({
+              id: a.id,
+              routine: a.routines?.title || 'Unknown Routine',
+              chunk: a.chunks?.description || (a.is_full_routine ? 'Full Routine' : 'Segment'),
+              score: a.overall_score || 0,
+              date: new Date(a.created_at).toLocaleDateString()
+            })));
+          } else {
+            setHistory(MOCK_HISTORY);
+          }
+        });
+    } else {
+      setHistory(MOCK_HISTORY);
+    }
+  }, [session]);
 
   return (
     <div className="min-h-screen bg-background p-6">
@@ -96,7 +127,7 @@ export default function History() {
         <div>
           <h3 className="text-lg font-bold text-white mb-4">Recent Sessions</h3>
           <div className="space-y-3">
-            {MOCK_HISTORY.map((session) => (
+            {history.map((session) => (
               <div key={session.id} className="glass p-4 rounded-xl border border-white/5 flex items-center justify-between">
                 <div>
                   <h4 className="font-semibold text-white">{session.chunk}</h4>

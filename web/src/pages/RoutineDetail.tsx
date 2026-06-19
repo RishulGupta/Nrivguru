@@ -1,5 +1,8 @@
+import { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { Play, ListVideo, ArrowLeft } from 'lucide-react';
+import { supabase } from '../lib/supabase';
+import { useAuthStore } from '../store/useStore';
 
 const MOCK_ROUTINE = {
   id: '1',
@@ -17,11 +20,25 @@ const MOCK_ROUTINE = {
 
 export default function RoutineDetail() {
   const { id } = useParams();
-  // Using id just to satisfy ts, in real app it fetches routine
-  console.log('Viewing routine:', id);
   const navigate = useNavigate();
-  // In a real app we'd fetch the routine using `id`
-  const routine = MOCK_ROUTINE;
+  const session = useAuthStore(state => state.session);
+  const [routine, setRoutine] = useState<any>(null);
+
+  useEffect(() => {
+    if (id && session?.user?.id) {
+      supabase.rpc('rpc_get_routine_detail', { p_routine_id: id, p_user_id: session.user.id })
+        .then(({ data }) => {
+          if (data) {
+            setRoutine(data);
+          } else {
+            // Fallback for mock/featured routines which aren't in DB
+            setRoutine(MOCK_ROUTINE);
+          }
+        });
+    }
+  }, [id, session]);
+
+  if (!routine) return <div className="min-h-screen bg-background flex items-center justify-center text-white">Loading...</div>;
 
   return (
     <div className="min-h-screen bg-background">
@@ -72,7 +89,7 @@ export default function RoutineDetail() {
         </div>
 
         <div className="space-y-4">
-          {routine.chunks.map((chunk, index) => (
+          {routine.chunks.map((chunk: any, index: number) => (
             <div 
               key={chunk.id} 
               className="glass p-6 rounded-2xl border border-white/5 hover:border-primary/50 transition-all flex items-center justify-between group cursor-pointer"
@@ -83,8 +100,12 @@ export default function RoutineDetail() {
                   {index + 1}
                 </div>
                 <div>
-                  <h3 className="text-lg font-bold text-white group-hover:text-primary transition-colors">{chunk.name}</h3>
-                  <p className="text-sm text-muted-foreground">{chunk.start}s - {chunk.end}s • {chunk.difficulty}</p>
+                  <h3 className="text-lg font-bold text-white group-hover:text-primary transition-colors">{chunk.name || chunk.description || `Segment ${index + 1}`}</h3>
+                  <p className="text-sm text-muted-foreground">
+                    {chunk.start_time_ms !== undefined 
+                      ? `${Math.round(chunk.start_time_ms/1000)}s - ${Math.round(chunk.end_time_ms/1000)}s` 
+                      : `${chunk.start}s - ${chunk.end}s`} • {chunk.difficulty || 'Beginner'}
+                  </p>
                 </div>
               </div>
               <div className="w-10 h-10 rounded-full bg-white/5 flex items-center justify-center group-hover:bg-primary transition-colors">
