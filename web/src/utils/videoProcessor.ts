@@ -33,10 +33,11 @@ export async function extractThumbnail(videoFile: File): Promise<string> {
   });
 }
 
+// Model list: newer models first. 1.5-flash was deprecated (returns 404).
+// If all fail, the caller falls back to auto-split.
 const GEMINI_MODELS = [
+  'gemini-2.5-flash',
   'gemini-2.0-flash',
-  'gemini-1.5-flash',
-  'gemini-1.5-flash-latest',
 ];
 
 async function callGemini(prompt: string, apiKey: string): Promise<string | null> {
