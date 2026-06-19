@@ -1,13 +1,23 @@
 import { useNavigate } from 'react-router-dom';
-import { useOnboardingStore } from '../store/useStore';
+import { useOnboardingStore, useAuthStore } from '../store/useStore';
 import { Activity, ShieldCheck, VideoOff } from 'lucide-react';
+import { supabase } from '../lib/supabase';
 
 export default function BiometricConsent() {
   const navigate = useNavigate();
   const setBiometricConsent = useOnboardingStore((state) => state.setBiometricConsent);
+  const session = useAuthStore((state) => state.session);
 
   const handleConsent = () => {
     setBiometricConsent(true);
+    // Store consent timestamp in Supabase if session exists
+    if (session?.user?.id) {
+      supabase.rpc('rpc_upsert_profile', {
+        p_user_id: session.user.id,
+        p_display_name: session.user.user_metadata?.username || session.user.email?.split('@')[0] || 'User',
+        p_avatar_url: null
+      }).catch(() => {});
+    }
     navigate('/auth');
   };
 
