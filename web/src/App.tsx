@@ -20,10 +20,11 @@ import Settings from './pages/Settings';
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const { ageVerified, biometricConsent } = useOnboardingStore();
   const session = useAuthStore((state) => state.session);
+  const isGuest = useAuthStore((state) => state.isGuest);
 
   if (!ageVerified) return <Navigate to="/age-gate" replace />;
   if (!biometricConsent) return <Navigate to="/consent" replace />;
-  if (!session) return <Navigate to="/auth" replace />;
+  if (!session && !isGuest) return <Navigate to="/auth" replace />;
 
   return <>{children}</>;
 }

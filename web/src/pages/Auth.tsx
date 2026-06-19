@@ -159,6 +159,18 @@ export default function Auth() {
             {isSignUp ? 'Sign In' : 'Sign Up'}
           </button>
         </p>
+
+        <div className="mt-4 pt-4 border-t border-white/10">
+          <button
+            onClick={() => {
+              useAuthStore.getState().setGuest(true);
+              navigate('/home');
+            }}
+            className="w-full flex items-center justify-center gap-2 bg-transparent border border-white/20 hover:bg-white/5 text-muted-foreground font-semibold py-3 rounded-xl transition-all text-sm"
+          >
+            Continue as Guest (for testing)
+          </button>
+        </div>
       </div>
     </div>
   );

@@ -26,18 +26,27 @@ interface AuthState {
   session: any | null; // Will type as Session from @supabase/supabase-js later
   profile: any | null;
   credits: number;
+  isGuest: boolean;
   setSession: (session: any) => void;
   setProfile: (profile: any) => void;
   setCredits: (credits: number) => void;
+  setGuest: (val: boolean) => void;
   clearAuth: () => void;
 }
 
-export const useAuthStore = create<AuthState>()((set) => ({
-  session: null,
-  profile: null,
-  credits: 0,
-  setSession: (session) => set({ session }),
-  setProfile: (profile) => set({ profile }),
-  setCredits: (credits) => set({ credits }),
-  clearAuth: () => set({ session: null, profile: null, credits: 0 }),
-}));
+export const useAuthStore = create<AuthState>()(
+  persist(
+    (set) => ({
+      session: null,
+      profile: null,
+      credits: 10,
+      isGuest: false,
+      setSession: (session) => set({ session }),
+      setProfile: (profile) => set({ profile }),
+      setCredits: (credits) => set({ credits }),
+      setGuest: (val) => set({ isGuest: val, credits: val ? 10 : 0, session: val ? {} as any : null }),
+      clearAuth: () => set({ session: null, profile: null, credits: 0, isGuest: false }),
+    }),
+    { name: 'taal-auth' }
+  )
+);
