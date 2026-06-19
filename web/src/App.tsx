@@ -9,6 +9,7 @@ import Auth from './pages/Auth';
 import Home from './pages/Home';
 import Upload from './pages/Upload';
 import RoutineDetail from './pages/RoutineDetail';
+import Practice from './pages/Practice';
 
 // Route Guards
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
@@ -101,6 +102,12 @@ function App() {
         <Route path="/routine/:id" element={
           <ProtectedRoute>
             <RoutineDetail />
+          </ProtectedRoute>
+        } />
+
+        <Route path="/practice/:id/:chunkId" element={
+          <ProtectedRoute>
+            <Practice />
           </ProtectedRoute>
         } />
         
