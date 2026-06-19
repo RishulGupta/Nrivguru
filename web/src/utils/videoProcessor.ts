@@ -7,7 +7,6 @@ export async function extractThumbnail(videoFile: File): Promise<string> {
     video.playsInline = true;
 
     video.onloadeddata = () => {
-      // Seek to 10% of duration for thumbnail
       video.currentTime = Math.max(1, video.duration * 0.1);
     };
 
@@ -34,10 +33,39 @@ export async function extractThumbnail(videoFile: File): Promise<string> {
   });
 }
 
+const GEMINI_MODELS = [
+  'gemini-2.0-flash',
+  'gemini-1.5-flash',
+  'gemini-1.5-flash-latest',
+];
+
+async function callGemini(prompt: string, apiKey: string): Promise<string | null> {
+  for (const model of GEMINI_MODELS) {
+    try {
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: prompt }] }],
+          generationConfig: { response_mime_type: "application/json" }
+        })
+      });
+      if (res.ok) {
+        return res.text();
+      }
+    } catch {
+      continue;
+    }
+  }
+  return null;
+}
+
 export async function chunkVideoWithAI(_videoFile: File, duration: number, styleTag: string = 'other') {
   const apiKey = import.meta.env.VITE_GEMINI_API_KEY;
   if (!apiKey) {
-    throw new Error('VITE_GEMINI_API_KEY is not defined');
+    console.warn('VITE_GEMINI_API_KEY is not defined — falling back to auto-split');
+    return fallbackSplit(duration);
   }
 
   const prompt = `This is a dance video of style: ${styleTag}.
@@ -56,67 +84,50 @@ Return ONLY valid JSON in this exact format, no other text:
   ]
 }`;
 
-  const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key=${apiKey}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      contents: [{ parts: [{ text: prompt }] }],
-      generationConfig: { response_mime_type: "application/json" }
-    })
-  });
-
-  if (!response.ok) {
-    throw new Error(`Gemini API error: ${response.statusText}`);
-  }
-
-  const data = await response.json();
-  const textResponse = data.candidates?.[0]?.content?.parts?.[0]?.text;
-  if (!textResponse) {
-    throw new Error('Failed to parse Gemini response');
-  }
-
+  // Try Gemini with model fallback
+  let textResponse: string | null = null;
   try {
-    const parsed = JSON.parse(textResponse);
-    return parsed.chunks || [];
-  } catch (e) {
-    console.error('JSON Parse error (attempt 1)', e);
-    // Retry once
-    try {
-      const retryResponse = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key=${apiKey}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          contents: [{ parts: [{ text: prompt }] }],
-          generationConfig: { response_mime_type: "application/json" }
-        })
-      });
-      if (retryResponse.ok) {
-        const retryData = await retryResponse.json();
-        const retryText = retryData.candidates?.[0]?.content?.parts?.[0]?.text;
-        if (retryText) {
-          const retryParsed = JSON.parse(retryText);
-          return retryParsed.chunks || [];
-        }
-      }
-    } catch (retryErr) {
-      console.error('Gemini retry also failed', retryErr);
+    const raw = await callGemini(prompt, apiKey);
+    if (raw) {
+      const data = JSON.parse(raw);
+      textResponse = data.candidates?.[0]?.content?.parts?.[0]?.text || null;
     }
-    // Fallback: auto-split into 3-second segments
-    const chunks = [];
-    let start = 0;
-    let idx = 0;
-    while (start < duration * 1000) {
-      const end = Math.min(start + 3000, duration * 1000);
-      chunks.push({
-        chunk_index: idx++,
-        start_time_ms: start,
-        end_time_ms: end,
-        description: `Segment ${idx}`
-      });
-      start = end;
-    }
-    return chunks;
+  } catch {
+    textResponse = null;
   }
+
+  // If we got a response, try to parse it
+  if (textResponse) {
+    try {
+      const parsed = JSON.parse(textResponse);
+      if (parsed.chunks && Array.isArray(parsed.chunks) && parsed.chunks.length > 0) {
+        return parsed.chunks;
+      }
+    } catch {
+      console.warn('Gemini returned unparseable JSON, falling back to auto-split');
+    }
+  }
+
+  // Gemini failed or returned bad data — use auto-split
+  console.warn('Gemini chunking failed, using auto-split fallback');
+  return fallbackSplit(duration);
+}
+
+function fallbackSplit(duration: number) {
+  const chunks = [];
+  let start = 0;
+  let idx = 0;
+  while (start < duration * 1000) {
+    const end = Math.min(start + 3000, duration * 1000);
+    chunks.push({
+      chunk_index: idx++,
+      start_time_ms: start,
+      end_time_ms: end,
+      description: `Segment ${idx}`
+    });
+    start = end;
+  }
+  return chunks;
 }
 
 export async function sliceVideo(
@@ -145,12 +156,11 @@ export async function sliceVideo(
       let stream: MediaStream;
       try {
         stream = (canvas as any).captureStream(30);
-      } catch (e) {
-        // Fallback for browsers that don't support captureStream
+      } catch {
         URL.revokeObjectURL(video.src);
         return reject(new Error('captureStream not supported'));
       }
-      
+
       const mediaRecorder = new MediaRecorder(stream, { mimeType: 'video/webm' });
       const chunks: Blob[] = [];
 
@@ -165,7 +175,7 @@ export async function sliceVideo(
       };
 
       video.currentTime = startTimeMs / 1000;
-      
+
       let recording = false;
 
       video.onseeked = () => {
@@ -174,7 +184,7 @@ export async function sliceVideo(
           mediaRecorder.start();
           video.playbackRate = 0.5;
           video.play();
-          
+
           const drawFrame = () => {
             if (video.currentTime * 1000 >= endTimeMs || video.ended || video.paused) {
               video.pause();
@@ -199,4 +209,3 @@ export async function sliceVideo(
     };
   });
 }
-
