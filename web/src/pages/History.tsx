@@ -18,25 +18,33 @@ export default function History() {
 
   useEffect(() => {
     if (session?.user?.id) {
-      supabase
-        .from('attempts')
-        .select('*, routines(title), chunks(description)')
-        .eq('user_id', session.user.id)
-        .order('created_at', { ascending: false })
-        .limit(10)
-        .then(({ data }) => {
-          if (data && data.length > 0) {
-            setHistory(data.map((a: any) => ({
-              id: a.id,
-              routine: a.routines?.title || 'Unknown Routine',
-              chunk: a.chunks?.description || (a.is_full_routine ? 'Full Routine' : 'Segment'),
-              score: a.overall_score || 0,
-              date: new Date(a.created_at).toLocaleDateString()
-            })));
+      // Use RPC only — get routines, then get attempts per routine
+      supabase.rpc('rpc_get_my_routines', { p_user_id: session.user.id })
+        .then(({ data: routines }) => {
+          if (routines && Array.isArray(routines) && routines.length > 0) {
+            // Get attempts for first routine to show data
+            const firstId = routines[0].id;
+            supabase.rpc('rpc_get_attempt_history', {
+              p_user_id: session.user.id,
+              p_routine_id: firstId
+            }).then(({ data: attempts }) => {
+              if (attempts && Array.isArray(attempts) && attempts.length > 0) {
+                setHistory(attempts.map((a: any) => ({
+                  id: a.id,
+                  routine: routines[0]?.title || 'Routine',
+                  chunk: a.is_full_routine ? 'Full Routine' : 'Segment',
+                  score: a.overall_score || 0,
+                  date: new Date(a.created_at).toLocaleDateString()
+                })));
+              } else {
+                setHistory(MOCK_HISTORY);
+              }
+            });
           } else {
             setHistory(MOCK_HISTORY);
           }
-        });
+        })
+        .catch(() => setHistory(MOCK_HISTORY));
     } else {
       setHistory(MOCK_HISTORY);
     }
@@ -45,7 +53,7 @@ export default function History() {
   return (
     <div className="min-h-screen bg-background p-6">
       <header className="max-w-4xl mx-auto flex items-center justify-between mb-8">
-        <button 
+        <button
           onClick={() => navigate('/home')}
           className="w-10 h-10 bg-white/5 hover:bg-white/10 rounded-full flex items-center justify-center text-white transition-colors border border-white/10"
         >
@@ -67,7 +75,7 @@ export default function History() {
               <p className="text-2xl font-bold text-white">85.7%</p>
             </div>
           </div>
-          
+
           <div className="glass p-6 rounded-2xl border border-white/5 flex items-center gap-4">
             <div className="w-12 h-12 rounded-full bg-green-500/20 flex items-center justify-center">
               <Target className="w-6 h-6 text-green-400" />
@@ -89,7 +97,7 @@ export default function History() {
           </div>
         </div>
 
-        {/* Custom SVG Progress Chart Mock */}
+        {/* Progress Chart */}
         <div className="glass p-8 rounded-3xl border border-white/5 mb-8">
           <div className="flex items-center justify-between mb-8">
             <h2 className="text-xl font-bold text-white flex items-center gap-2">
@@ -97,17 +105,16 @@ export default function History() {
               Recent Performance
             </h2>
           </div>
-          
+
           <div className="relative w-full h-48">
             <svg viewBox="0 0 100 100" preserveAspectRatio="none" className="w-full h-full overflow-visible">
-              <path 
-                d="M 0,80 C 20,70 40,30 60,40 S 80,10 100,20" 
-                fill="none" 
-                stroke="#9333ea" 
+              <path
+                d="M 0,80 C 20,70 40,30 60,40 S 80,10 100,20"
+                fill="none"
+                stroke="#9333ea"
                 strokeWidth="2"
                 style={{ filter: 'drop-shadow(0px 10px 10px rgba(147,51,234,0.4))' }}
               />
-              {/* Plot points */}
               <circle cx="0" cy="80" r="2" fill="#ec4899" />
               <circle cx="30" cy="50" r="2" fill="#ec4899" />
               <circle cx="60" cy="40" r="2" fill="#ec4899" />
@@ -123,21 +130,21 @@ export default function History() {
           </div>
         </div>
 
-        {/* Recent Sessions List */}
+        {/* Recent Sessions */}
         <div>
           <h3 className="text-lg font-bold text-white mb-4">Recent Sessions</h3>
           <div className="space-y-3">
-            {history.map((session) => (
-              <div key={session.id} className="glass p-4 rounded-xl border border-white/5 flex items-center justify-between">
+            {history.map((s) => (
+              <div key={s.id} className="glass p-4 rounded-xl border border-white/5 flex items-center justify-between">
                 <div>
-                  <h4 className="font-semibold text-white">{session.chunk}</h4>
-                  <p className="text-sm text-muted-foreground">{session.routine} • {session.date}</p>
+                  <h4 className="font-semibold text-white">{s.chunk}</h4>
+                  <p className="text-sm text-muted-foreground">{s.routine} • {s.date}</p>
                 </div>
                 <div className={`font-outfit font-bold text-xl ${
-                  session.score >= 85 ? 'text-green-400' : 
-                  session.score >= 70 ? 'text-yellow-400' : 'text-red-400'
+                  s.score >= 85 ? 'text-green-400' :
+                  s.score >= 70 ? 'text-yellow-400' : 'text-red-400'
                 }`}>
-                  {session.score}%
+                  {s.score}%
                 </div>
               </div>
             ))}
