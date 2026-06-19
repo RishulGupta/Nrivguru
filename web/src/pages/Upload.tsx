@@ -1,7 +1,7 @@
 import React, { useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useUploadStore } from '../store/uploadStore';
-import { extractThumbnail, chunkVideoWithAI, sliceVideo } from '../utils/videoProcessor';
+import { extractThumbnail, chunkVideoWithAI } from '../utils/videoProcessor';
 import { extractFrames } from '../utils/poseExtractor';
 import { Upload as UploadIcon, CheckCircle, AlertCircle, Play, Loader2 } from 'lucide-react';
 import { supabase } from '../lib/supabase';
@@ -101,9 +101,9 @@ export default function Upload() {
     }, 300000);
 
     try {
-      const auth = useAuthStore.getState();
-      if (!auth.session && !auth.isGuest) throw new Error('Not authenticated');
-      const userId = auth.session?.user?.id || 'guest';
+      const { session, isGuest } = useAuthStore.getState();
+      if (!session && !isGuest) throw new Error('Not authenticated');
+      const userId = session?.user?.id || 'guest';
 
       // Check credits first (graceful if Supabase not available)
       try {
@@ -184,36 +184,15 @@ export default function Upload() {
         }
       } catch { /* Supabase not available */ }
 
-      // 5. Extract and upload chunk clips in PARALLEL (Promise.all per prompt)
+      // 5. Prepare chunk data (skip laggy clip creation — use original video with time seeking)
       setProgress(65);
-      const finalChunks = await Promise.all(
-        chunksData.map(async (c: any, i: number) => {
-          const clipBlob = await sliceVideo(videoFile, c.start_time_ms, c.end_time_ms);
-          let clipUrl = '';
-          try {
-            // Try Supabase storage first
-            const clipPath = `${session.user.id}/${Date.now()}-chunk-${i}.webm`;
-            const { error: clipErr } = await supabase.storage
-              .from('taal-chunk-clips')
-              .upload(clipPath, clipBlob, { contentType: 'video/webm' });
-            if (!clipErr) {
-              clipUrl = supabase.storage.from('taal-chunk-clips').getPublicUrl(clipPath).data.publicUrl;
-              setCancelCleanup(prev => [...prev, `taal-chunk-clips/${clipPath}`]);
-            } else throw clipErr;
-          } catch {
-            // Fallback: create local blob URL from the clip blob
-            clipUrl = URL.createObjectURL(clipBlob);
-          }
-          return {
-            chunk_index: c.chunk_index,
-            start_time_ms: c.start_time_ms,
-            end_time_ms: c.end_time_ms,
-            description: c.description,
-            clip_url: clipUrl
-          };
-        })
-      );
-      if (abortRef.current) throw new Error('Cancelled');
+      const finalChunks = chunksData.map((c: any, i: number) => ({
+        chunk_index: c.chunk_index,
+        start_time_ms: c.start_time_ms,
+        end_time_ms: c.end_time_ms,
+        description: c.description,
+        clip_url: '', // empty — Practice uses original video blob with time-range seeking
+      }));
       setProgress(90);
 
       // 6. Save to Database (graceful if Supabase not available)
