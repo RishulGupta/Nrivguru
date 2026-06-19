@@ -19,8 +19,8 @@ export default function AgeGate() {
       return;
     }
     
-    if (currentYear - birthYear < 18) {
-      setError('You must be at least 18 years old to use Taal.');
+    if (currentYear - birthYear < 13) {
+      setError('This app requires parental consent for users under 13. Please ask a parent or guardian to set up your account.');
       return;
     }
     
