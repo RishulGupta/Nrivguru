@@ -77,7 +77,11 @@ export default function Home() {
           
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
             {MOCK_ROUTINES.map((routine) => (
-              <div key={routine.id} className="group glass rounded-2xl overflow-hidden border border-white/5 hover:border-primary/50 transition-all hover:shadow-[0_0_20px_rgba(147,51,234,0.15)] cursor-pointer">
+              <div 
+                key={routine.id} 
+                onClick={() => navigate(`/routine/${routine.id}`)}
+                className="group glass rounded-2xl overflow-hidden border border-white/5 hover:border-primary/50 transition-all hover:shadow-[0_0_20px_rgba(147,51,234,0.15)] cursor-pointer"
+              >
                 <div className="relative aspect-video overflow-hidden">
                   <div className="absolute inset-0 bg-black/40 group-hover:bg-black/20 transition-colors z-10"></div>
                   <img 

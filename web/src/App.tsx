@@ -8,6 +8,7 @@ import BiometricConsent from './pages/BiometricConsent';
 import Auth from './pages/Auth';
 import Home from './pages/Home';
 import Upload from './pages/Upload';
+import RoutineDetail from './pages/RoutineDetail';
 
 // Route Guards
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
@@ -94,6 +95,12 @@ function App() {
         <Route path="/upload" element={
           <ProtectedRoute>
             <Upload />
+          </ProtectedRoute>
+        } />
+
+        <Route path="/routine/:id" element={
+          <ProtectedRoute>
+            <RoutineDetail />
           </ProtectedRoute>
         } />
         
