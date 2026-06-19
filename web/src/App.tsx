@@ -7,6 +7,7 @@ import AgeGate from './pages/AgeGate';
 import BiometricConsent from './pages/BiometricConsent';
 import Auth from './pages/Auth';
 import Home from './pages/Home';
+import Upload from './pages/Upload';
 
 // Route Guards
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
@@ -87,6 +88,12 @@ function App() {
         <Route path="/home" element={
           <ProtectedRoute>
             <Home />
+          </ProtectedRoute>
+        } />
+        
+        <Route path="/upload" element={
+          <ProtectedRoute>
+            <Upload />
           </ProtectedRoute>
         } />
         

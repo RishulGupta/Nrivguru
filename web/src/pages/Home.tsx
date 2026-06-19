@@ -58,7 +58,10 @@ export default function Home() {
             <p className="text-lg text-muted-foreground mb-8">
               Upload a new routine to extract steps and practice with real-time AI feedback.
             </p>
-            <button className="bg-primary hover:bg-primary/90 text-primary-foreground font-semibold px-8 py-3 rounded-xl transition-all shadow-[0_0_15px_rgba(147,51,234,0.3)] hover:shadow-[0_0_25px_rgba(147,51,234,0.5)] flex items-center gap-2">
+            <button 
+              onClick={() => navigate('/upload')}
+              className="bg-primary hover:bg-primary/90 text-primary-foreground font-semibold px-8 py-3 rounded-xl transition-all shadow-[0_0_15px_rgba(147,51,234,0.3)] hover:shadow-[0_0_25px_rgba(147,51,234,0.5)] flex items-center gap-2"
+            >
               <Upload className="w-5 h-5" />
               Upload Video
             </button>
