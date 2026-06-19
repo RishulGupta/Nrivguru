@@ -24,77 +24,96 @@ export async function initializePoseLandmarker() {
   return poseLandmarker;
 }
 
+/**
+ * Extract pose frames using seek-based approach (NOT play-based).
+ *
+ * Why seek-based: offscreen <video> elements often fail to play reliably or
+ * trigger requestVideoFrameCallback in all browsers. Seeking to exact positions
+ * and detecting on seeked events is deterministic and faster.
+ *
+ * Processes every 3rd frame at ~30fps = ~10 poses/second.
+ */
 export async function extractFrames(
-  videoFile: File, 
+  videoFile: File,
   onProgress?: (progress: number) => void
 ): Promise<any[]> {
   const landmarker = await initializePoseLandmarker();
-  
+
   return new Promise((resolve, reject) => {
     const video = document.createElement('video');
-    video.src = URL.createObjectURL(videoFile);
     video.muted = true;
     video.playsInline = true;
+    video.preload = 'auto';
+    video.src = URL.createObjectURL(videoFile);
 
     const frames: any[] = [];
-    let isProcessing = false;
+    let abort = false;
+    const timeout = setTimeout(() => { abort = true; }, 120000); // 2 min max
 
-    video.onloadeddata = () => {
-      video.play();
-      processVideo();
+    // After each seek, detect landmarks, then seek to next position
+    let seekPositions: number[] = [];
+    let currentSeekIdx = 0;
+    let lastTimestampMs = 0;
+
+    video.onloadedmetadata = () => {
+      const fps = 30;
+      const totalFrames = Math.floor(video.duration * fps);
+      const step = 3; // every 3rd frame
+      seekPositions = [];
+      for (let i = 0; i < totalFrames; i += step) {
+        seekPositions.push(i / fps);
+      }
+      // Start seeking
+      doSeek();
     };
 
-    let frameCounter = 0;
-
-    const processVideo = () => {
-      if (video.paused || video.ended) {
+    function doSeek() {
+      if (abort || currentSeekIdx >= seekPositions.length) {
+        clearTimeout(timeout);
         URL.revokeObjectURL(video.src);
         resolve(frames);
         return;
       }
 
-      if (!isProcessing && video.currentTime > 0) {
-        isProcessing = true;
+      video.currentTime = seekPositions[currentSeekIdx];
+    }
 
-        // Process every 3rd frame for efficiency
-        frameCounter++;
-        if (frameCounter % 3 === 0) {
-          try {
-            // MediaPipe requires strictly increasing timestamps
-            let startTimeMs = Math.round(video.currentTime * 1000);
-            if (typeof (video as any)._lastVideoMs === 'number' && startTimeMs <= (video as any)._lastVideoMs) {
-              startTimeMs = (video as any)._lastVideoMs + 1;
-            }
-            (video as any)._lastVideoMs = startTimeMs;
+    video.onseeked = async () => {
+      if (abort) return;
 
-            const result = landmarker.detectForVideo(video, startTimeMs);
-
-            if (result.landmarks && result.landmarks.length > 0) {
-              frames.push({
-                timestamp: video.currentTime,
-                landmarks: result.landmarks[0]
-              });
-            }
-
-            if (onProgress && video.duration) {
-              onProgress((video.currentTime / video.duration) * 100);
-            }
-          } catch (error) {
-            console.warn('Pose extraction skipped a frame due to MediaPipe error:', error);
-          }
+      try {
+        const timestampMs = Math.round(video.currentTime * 1000);
+        if (timestampMs <= lastTimestampMs) {
+          // Ensure strictly increasing timestamps for MediaPipe
+          lastTimestampMs = timestampMs + 1;
+        } else {
+          lastTimestampMs = timestampMs;
         }
-        isProcessing = false;
+
+        const result = landmarker.detectForVideo(video, lastTimestampMs);
+
+        if (result.landmarks && result.landmarks.length > 0) {
+          frames.push({
+            timestamp: video.currentTime,
+            landmarks: result.landmarks[0]
+          });
+        }
+
+        if (onProgress && seekPositions.length > 0) {
+          const pct = Math.round((currentSeekIdx / seekPositions.length) * 100);
+          onProgress(pct);
+        }
+      } catch (err) {
+        console.warn('Pose extraction skipped a frame at', video.currentTime, err);
       }
 
-      // Use requestVideoFrameCallback if available for precise frame tracking, fallback to requestAnimationFrame
-      if ('requestVideoFrameCallback' in video) {
-        (video as any).requestVideoFrameCallback(processVideo);
-      } else {
-        requestAnimationFrame(processVideo);
-      }
+      currentSeekIdx++;
+      // Schedule next seek asynchronously to avoid blocking
+      setTimeout(doSeek, 0);
     };
 
     video.onerror = (e) => {
+      clearTimeout(timeout);
       URL.revokeObjectURL(video.src);
       reject(e);
     };

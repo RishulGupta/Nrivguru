@@ -138,75 +138,82 @@ export async function sliceVideo(
 ): Promise<Blob> {
   return new Promise((resolve, reject) => {
     const video = document.createElement('video');
-    video.src = URL.createObjectURL(videoFile);
+    video.preload = 'auto';
     video.muted = true;
     video.playsInline = true;
+    video.src = URL.createObjectURL(videoFile);
 
     const canvas = document.createElement('canvas');
     canvas.width = 854;
     canvas.height = 480;
     const ctx = canvas.getContext('2d');
+    const timeout = setTimeout(() => reject(new Error('sliceVideo timed out')), 30000);
 
     video.onloadeddata = () => {
       const scale = Math.min(canvas.width / video.videoWidth, canvas.height / video.videoHeight);
       const w = video.videoWidth * scale;
       const h = video.videoHeight * scale;
-      const x = (canvas.width - w) / 2;
-      const y = (canvas.height - h) / 2;
+      const drawX = (canvas.width - w) / 2;
+      const drawY = (canvas.height - h) / 2;
 
       let stream: MediaStream;
       try {
-        stream = (canvas as any).captureStream(30);
+        stream = (canvas as any).captureStream(15);
       } catch {
         URL.revokeObjectURL(video.src);
+        clearTimeout(timeout);
         return reject(new Error('captureStream not supported'));
       }
 
       const mediaRecorder = new MediaRecorder(stream, { mimeType: 'video/webm' });
-      const chunks: Blob[] = [];
+      const blobs: Blob[] = [];
 
       mediaRecorder.ondataavailable = (e) => {
-        if (e.data.size > 0) chunks.push(e.data);
+        if (e.data.size > 0) blobs.push(e.data);
       };
 
       mediaRecorder.onstop = () => {
-        const blob = new Blob(chunks, { type: 'video/webm' });
+        clearTimeout(timeout);
+        const blob = new Blob(blobs, { type: 'video/webm' });
         URL.revokeObjectURL(video.src);
         resolve(blob);
       };
 
-      video.currentTime = startTimeMs / 1000;
+      // Seek-based frame capture: seek to each time position and draw to canvas
+      const chunkDurationMs = endTimeMs - startTimeMs;
+      const frameIntervalMs = 100; // 10fps for slow-mo clip
+      let currentFrameTime = startTimeMs;
 
-      let recording = false;
+      // Start recording
+      mediaRecorder.start();
+
+      function captureNextFrame() {
+        if (currentFrameTime > endTimeMs) {
+          mediaRecorder.stop();
+          return;
+        }
+        video.currentTime = currentFrameTime / 1000;
+      }
 
       video.onseeked = () => {
-        if (!recording) {
-          recording = true;
-          mediaRecorder.start();
-          video.playbackRate = 0.5;
-          video.play();
-
-          const drawFrame = () => {
-            if (video.currentTime * 1000 >= endTimeMs || video.ended || video.paused) {
-              video.pause();
-              mediaRecorder.stop();
-              return;
-            }
-            if (ctx) {
-              ctx.fillStyle = '#000';
-              ctx.fillRect(0, 0, canvas.width, canvas.height);
-              ctx.drawImage(video, x, y, w, h);
-            }
-            requestAnimationFrame(drawFrame);
-          };
-          drawFrame();
+        if (ctx && video.videoWidth > 0) {
+          ctx.fillStyle = '#000';
+          ctx.fillRect(0, 0, canvas.width, canvas.height);
+          ctx.drawImage(video, drawX, drawY, w, h);
         }
+        currentFrameTime += frameIntervalMs;
+        // Schedule next frame capture
+        setTimeout(captureNextFrame, 16); // ~60fps schedule
       };
 
-      video.onerror = (e) => {
-        URL.revokeObjectURL(video.src);
-        reject(e);
-      };
+      // Start capturing
+      captureNextFrame();
+    };
+
+    video.onerror = (e) => {
+      clearTimeout(timeout);
+      URL.revokeObjectURL(video.src);
+      reject(e);
     };
   });
 }
