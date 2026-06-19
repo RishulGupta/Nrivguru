@@ -57,6 +57,12 @@ export default function Home() {
             <Activity className="w-5 h-5" />
           </button>
           <button 
+            onClick={() => navigate('/instructor')}
+            className="hidden sm:flex bg-primary/20 text-primary border border-primary hover:bg-primary/30 font-semibold px-4 py-1.5 rounded-full items-center transition-colors text-sm"
+          >
+            Instructor Portal
+          </button>
+          <button 
             onClick={() => navigate('/credits')}
             className="w-10 h-10 rounded-full bg-white/5 flex items-center justify-center text-white hover:bg-white/10 transition-colors"
             title="Purchase Credits"

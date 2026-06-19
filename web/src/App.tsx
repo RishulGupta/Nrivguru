@@ -13,6 +13,7 @@ import Practice from './pages/Practice';
 import Share from './pages/Share';
 import Credits from './pages/Credits';
 import History from './pages/History';
+import InstructorPortal from './pages/InstructorPortal';
 
 // Route Guards
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
@@ -154,6 +155,12 @@ function App() {
         <Route path="/history" element={
           <ProtectedRoute>
             <History />
+          </ProtectedRoute>
+        } />
+
+        <Route path="/instructor" element={
+          <ProtectedRoute>
+            <InstructorPortal />
           </ProtectedRoute>
         } />
         
