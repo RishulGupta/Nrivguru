@@ -104,24 +104,29 @@ export default function Home() {
         </section>
 
         {/* Library Grid */}
-        {myRoutines && myRoutines.length > 0 && (
+        {myRoutines && myRoutines.length > 0 ? (
           <section className="mb-12">
             <div className="flex items-center justify-between mb-6">
               <h2 className="text-2xl font-outfit font-bold text-white">Your Library</h2>
+              <div className="flex items-center gap-2">
+                <button className="text-xs text-muted-foreground hover:text-white px-2 py-1 rounded border border-white/10 hover:border-white/30 transition-colors">Recent</button>
+                <button className="text-xs text-muted-foreground hover:text-white px-2 py-1 rounded border border-white/10 hover:border-white/30 transition-colors">Best Score</button>
+                <button className="text-xs text-muted-foreground hover:text-white px-2 py-1 rounded border border-white/10 hover:border-white/30 transition-colors">Newest</button>
+              </div>
             </div>
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
               {myRoutines.map((routine) => (
-                <div 
-                  key={routine.id} 
+                <div
+                  key={routine.id}
                   onClick={() => navigate(`/routine/${routine.id}`)}
                   className="group glass rounded-2xl overflow-hidden border border-white/5 hover:border-primary/50 transition-all hover:shadow-[0_0_20px_rgba(147,51,234,0.15)] cursor-pointer"
                 >
                   <div className="relative aspect-video overflow-hidden">
                     <div className="absolute inset-0 bg-black/40 group-hover:bg-black/20 transition-colors z-10"></div>
                     {routine.thumbnail_url ? (
-                      <img 
-                        src={routine.thumbnail_url} 
-                        alt={routine.title} 
+                      <img
+                        src={routine.thumbnail_url}
+                        alt={routine.title}
                         className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
                       />
                     ) : (
@@ -129,6 +134,13 @@ export default function Home() {
                         <Play className="w-8 h-8 text-white/50" />
                       </div>
                     )}
+                    <div className="absolute top-2 left-2 z-20">
+                      {routine.style_tag && (
+                        <span className="bg-primary/20 text-primary border border-primary/30 text-xs font-bold px-2 py-0.5 rounded-full uppercase tracking-wider">
+                          {routine.style_tag}
+                        </span>
+                      )}
+                    </div>
                     <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-20 w-12 h-12 rounded-full bg-white/20 backdrop-blur-md flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
                       <Play className="w-5 h-5 text-white ml-1" />
                     </div>
@@ -137,7 +149,9 @@ export default function Home() {
                     <h3 className="font-semibold text-lg text-white group-hover:text-primary transition-colors">{routine.title}</h3>
                     <div className="flex items-center justify-between mt-4">
                       <span className="text-sm text-muted-foreground">{routine.chunk_count} Chunks</span>
-                      <span className="text-xs font-medium px-2 py-1 bg-white/5 rounded-full text-gray-300">
+                      <span className={`text-xs font-medium px-2 py-1 rounded-full ${
+                        routine.last_score ? (routine.last_score >= 80 ? 'bg-green-500/20 text-green-400' : routine.last_score >= 50 ? 'bg-yellow-500/20 text-yellow-400' : 'bg-red-500/20 text-red-400') : 'bg-white/5 text-gray-300'
+                      }`}>
                         {routine.last_score ? `${routine.last_score}% Best` : 'Not practiced'}
                       </span>
                     </div>
@@ -145,6 +159,23 @@ export default function Home() {
                 </div>
               ))}
             </div>
+          </section>
+        ) : (
+          <section className="mb-12 glass p-12 rounded-3xl border border-white/5 text-center">
+            <div className="w-16 h-16 bg-white/5 rounded-full flex items-center justify-center mx-auto mb-4">
+              <Upload className="w-8 h-8 text-muted-foreground" />
+            </div>
+            <h2 className="text-2xl font-outfit font-bold text-white mb-2">Upload your first dance — it's free.</h2>
+            <p className="text-muted-foreground mb-6 max-w-md mx-auto">
+              Upload a dance video and Taal will automatically break it into learnable steps using AI.
+            </p>
+            <button
+              onClick={() => navigate('/upload')}
+              className="bg-primary hover:bg-primary/90 text-primary-foreground font-semibold px-6 py-3 rounded-xl transition-all shadow-[0_0_15px_rgba(147,51,234,0.3)] inline-flex items-center gap-2"
+            >
+              <Upload className="w-5 h-5" />
+              Upload Your First Video
+            </button>
           </section>
         )}
 

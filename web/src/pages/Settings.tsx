@@ -193,11 +193,12 @@ export default function Settings() {
             </div>
             <select
               value={darkMode ? 'dark' : 'light'}
-              onChange={(e) => setDarkMode(e.target.value === 'dark')}
+              onChange={(e) => setDarkMode(e.target.value !== 'light')}
               className="bg-black/40 border border-white/10 rounded-lg px-3 py-2 text-white outline-none focus:border-primary transition-colors text-sm"
             >
               <option value="dark">Dark</option>
               <option value="light">Light</option>
+              <option value="system">System default</option>
             </select>
           </div>
 

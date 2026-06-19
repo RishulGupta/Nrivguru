@@ -7,8 +7,8 @@ export async function extractThumbnail(videoFile: File): Promise<string> {
     video.playsInline = true;
 
     video.onloadeddata = () => {
-      // Seek to 1 second in to grab a thumbnail (avoids black first frames)
-      video.currentTime = Math.min(1, video.duration / 2);
+      // Seek to 10% of duration for thumbnail
+      video.currentTime = Math.max(1, video.duration * 0.1);
     };
 
     video.onseeked = () => {
@@ -18,7 +18,7 @@ export async function extractThumbnail(videoFile: File): Promise<string> {
       const ctx = canvas.getContext('2d');
       if (ctx) {
         ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-        const dataUrl = canvas.toDataURL('image/jpeg', 0.8);
+        const dataUrl = canvas.toDataURL('image/jpeg', 0.5);
         URL.revokeObjectURL(video.src);
         resolve(dataUrl);
       } else {
@@ -79,7 +79,28 @@ Return ONLY valid JSON in this exact format, no other text:
     const parsed = JSON.parse(textResponse);
     return parsed.chunks || [];
   } catch (e) {
-    console.error('JSON Parse error', e);
+    console.error('JSON Parse error (attempt 1)', e);
+    // Retry once
+    try {
+      const retryResponse = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key=${apiKey}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: prompt }] }],
+          generationConfig: { response_mime_type: "application/json" }
+        })
+      });
+      if (retryResponse.ok) {
+        const retryData = await retryResponse.json();
+        const retryText = retryData.candidates?.[0]?.content?.parts?.[0]?.text;
+        if (retryText) {
+          const retryParsed = JSON.parse(retryText);
+          return retryParsed.chunks || [];
+        }
+      }
+    } catch (retryErr) {
+      console.error('Gemini retry also failed', retryErr);
+    }
     // Fallback: auto-split into 3-second segments
     const chunks = [];
     let start = 0;

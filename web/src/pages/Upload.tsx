@@ -30,9 +30,37 @@ export default function Upload() {
     reset
   } = useUploadStore();
   const [styleTag, setStyleTag] = useState('Other');
+  const [routineTitle, setRoutineTitle] = useState('');
   const [videoDuration, setVideoDuration] = useState(0);
   const [cancelCleanup, setCancelCleanup] = useState<string[]>([]);
+  const [isDragOver, setIsDragOver] = useState(false);
   const abortRef = useRef(false);
+
+  const handleUploadClick = () => fileInputRef.current?.click();
+
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragOver(true);
+  };
+
+  const handleDragLeave = () => setIsDragOver(false);
+
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragOver(false);
+    const file = e.dataTransfer.files?.[0];
+    if (file) {
+      if (!file.type.startsWith('video/')) { setError('Please select a valid video file.'); return; }
+      if (file.size > MAX_FILE_SIZE_BYTES) { setError('File too large. Maximum size is 500MB.'); return; }
+      setVideoFile(file);
+      setRoutineTitle(file.name.replace(/\.[^/.]+$/, ''));
+      setError(null);
+      const v = document.createElement('video');
+      v.preload = 'metadata';
+      v.src = URL.createObjectURL(file);
+      v.onloadedmetadata = () => { setVideoDuration(v.duration); URL.revokeObjectURL(v.src); };
+    }
+  };
 
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -46,6 +74,7 @@ export default function Upload() {
         return;
       }
       setVideoFile(file);
+      setRoutineTitle(file.name.replace(/\.[^/.]+$/, ""));
       setError(null);
       // Get duration
       const v = document.createElement('video');
@@ -157,7 +186,7 @@ export default function Upload() {
       // 6. Save to Database
       const { data: routineData, error: routineError } = await supabase.rpc('rpc_create_routine', {
         p_user_id: session.user.id,
-        p_title: videoFile.name.replace(/\.[^/.]+$/, ""),
+        p_title: routineTitle || videoFile.name.replace(/\.[^/.]+$/, ""),
         p_style_tag: styleTag,
         p_thumbnail_url: thumbnailUrl,
         p_pose_json_url: poseJsonUrl,
@@ -293,8 +322,13 @@ export default function Upload() {
 
           {!videoFile ? (
             <div
-              className="border-2 border-dashed border-white/20 rounded-2xl p-12 flex flex-col items-center justify-center text-center cursor-pointer hover:border-primary/50 hover:bg-white/5 transition-all group"
-              onClick={() => fileInputRef.current?.click()}
+              className={`border-2 border-dashed rounded-2xl p-12 flex flex-col items-center justify-center text-center cursor-pointer hover:bg-white/5 transition-all group ${
+                isDragOver ? 'border-primary bg-primary/10' : 'border-white/20 hover:border-primary/50'
+              }`}
+              onClick={handleUploadClick}
+              onDragOver={handleDragOver}
+              onDragLeave={handleDragLeave}
+              onDrop={handleDrop}
             >
               <div className="w-16 h-16 bg-white/5 rounded-full flex items-center justify-center mb-4 group-hover:bg-primary/20 transition-colors">
                 <UploadIcon className="w-8 h-8 text-muted-foreground group-hover:text-primary transition-colors" />
@@ -339,6 +373,16 @@ export default function Upload() {
               </div>
 
               {/* Style tag selector */}
+              <div>
+                <label className="text-sm text-white font-semibold block mb-2">Routine Name</label>
+                <input
+                  type="text"
+                  value={routineTitle}
+                  onChange={e => setRoutineTitle(e.target.value)}
+                  className="w-full bg-input/50 border border-white/10 rounded-xl px-4 py-3 text-white focus:outline-none focus:ring-2 focus:ring-primary transition-all"
+                />
+              </div>
+
               <div>
                 <label className="text-sm text-white font-semibold block mb-2">Style Tag</label>
                 <select
