@@ -1,0 +1,9 @@
+{
+  "name": "taal-monorepo",
+  "private": true,
+  "workspaces": [
+    "packages/*",
+    "web",
+    "mobile"
+  ]
+}
