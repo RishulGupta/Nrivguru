@@ -99,8 +99,9 @@ export default function Upload() {
     }, 300000);
 
     try {
-      const session = useAuthStore.getState().session;
-      if (!session) throw new Error('Not authenticated');
+      const auth = useAuthStore.getState();
+      if (!auth.session && !auth.isGuest) throw new Error('Not authenticated');
+      const userId = auth.session?.user?.id || 'guest';
 
       // Check credits first (graceful if Supabase not available)
       try {

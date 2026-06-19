@@ -22,9 +22,21 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const session = useAuthStore((state) => state.session);
   const isGuest = useAuthStore((state) => state.isGuest);
 
-  if (!ageVerified) return <Navigate to="/age-gate" replace />;
-  if (!biometricConsent) return <Navigate to="/consent" replace />;
-  if (!session && !isGuest) return <Navigate to="/auth" replace />;
+  // Hydration fallback: check localStorage directly if Zustand persist hasn't rehydrated yet
+  const guestFromStorage = typeof window !== 'undefined'
+    ? (() => { try { const a = JSON.parse(localStorage.getItem('taal-auth') || '{}'); return a?.state?.isGuest === true; } catch { return false; } })()
+    : false;
+  const onboardingFromStorage = typeof window !== 'undefined'
+    ? (() => { try { const o = JSON.parse(localStorage.getItem('taal-onboarding') || '{}'); return o?.state?.ageVerified === true && o?.state?.biometricConsent === true; } catch { return false; } })()
+    : false;
+
+  const effectiveAge = ageVerified || onboardingFromStorage;
+  const effectiveConsent = biometricConsent || onboardingFromStorage;
+  const effectiveAuth = session || isGuest || guestFromStorage;
+
+  if (!effectiveAge) return <Navigate to="/age-gate" replace />;
+  if (!effectiveConsent) return <Navigate to="/consent" replace />;
+  if (!effectiveAuth) return <Navigate to="/auth" replace />;
 
   return <>{children}</>;
 }
