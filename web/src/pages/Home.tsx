@@ -1,7 +1,7 @@
 import { useNavigate } from 'react-router-dom';
 import { useAuthStore } from '../store/useStore';
 import { supabase } from '../lib/supabase';
-import { LogOut, Play, Upload, Star, Clock } from 'lucide-react';
+import { LogOut, Play, Upload, Star, Clock, Activity, Zap, User } from 'lucide-react';
 
 const MOCK_ROUTINES = [
   { id: '1', title: 'Beginner Hip Hop', instructor: 'Alex M.', duration: '2:30', difficulty: 'Beginner', plays: 1250, thumbnail: 'https://images.unsplash.com/photo-1547153760-18fc86324498?auto=format&fit=crop&q=80&w=800' },
@@ -36,6 +36,25 @@ export default function Home() {
           <div className="bg-secondary px-4 py-1.5 rounded-full flex items-center gap-2 border border-white/10">
             <Star className="w-4 h-4 text-yellow-400 fill-yellow-400" />
             <span className="text-sm font-semibold">{credits} Credits</span>
+          </div>
+          <button 
+            onClick={() => navigate('/history')}
+            className="w-10 h-10 rounded-full bg-white/5 flex items-center justify-center text-white hover:bg-white/10 transition-colors"
+            title="Progress History"
+          >
+            <Activity className="w-5 h-5" />
+          </button>
+          <button 
+            onClick={() => navigate('/credits')}
+            className="w-10 h-10 rounded-full bg-white/5 flex items-center justify-center text-white hover:bg-white/10 transition-colors"
+            title="Purchase Credits"
+          >
+            <Zap className="w-5 h-5 text-yellow-400" />
+          </button>
+          <div className="w-10 h-10 rounded-full bg-gradient-to-tr from-primary to-pink-500 p-[2px]">
+            <div className="w-full h-full rounded-full bg-black flex items-center justify-center">
+              <User className="w-5 h-5 text-white" />
+            </div>
           </div>
           <button 
             onClick={handleLogout}

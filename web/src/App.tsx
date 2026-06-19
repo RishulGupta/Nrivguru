@@ -10,6 +10,9 @@ import Home from './pages/Home';
 import Upload from './pages/Upload';
 import RoutineDetail from './pages/RoutineDetail';
 import Practice from './pages/Practice';
+import Share from './pages/Share';
+import Credits from './pages/Credits';
+import History from './pages/History';
 
 // Route Guards
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
@@ -108,6 +111,24 @@ function App() {
         <Route path="/practice/:id/:chunkId" element={
           <ProtectedRoute>
             <Practice />
+          </ProtectedRoute>
+        } />
+
+        <Route path="/share" element={
+          <ProtectedRoute>
+            <Share />
+          </ProtectedRoute>
+        } />
+
+        <Route path="/credits" element={
+          <ProtectedRoute>
+            <Credits />
+          </ProtectedRoute>
+        } />
+
+        <Route path="/history" element={
+          <ProtectedRoute>
+            <History />
           </ProtectedRoute>
         } />
         
