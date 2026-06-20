@@ -1,23 +1,18 @@
 import { useEffect, useRef } from 'react';
+import { generateCorrectionArrows } from '@taal/shared/utils/MistakeHighlighter';
 
-// Using minimal typing from shared types we built in Phase 2
-// Assuming PoseLandmark has {x,y,z,visibility}
-export interface PoseLandmark {
-  x: number;
-  y: number;
-  z?: number;
-  visibility?: number;
-}
+import type { PoseLandmark } from '@taal/shared/types/pose';
 
 interface SkeletonCanvasProps {
   landmarks: PoseLandmark[] | null;
+  refLandmarks?: PoseLandmark[] | null;
   width: number;
   height: number;
-  // Optional accuracy scores per joint (0-100) to color code the skeleton
   jointScores?: Record<number, number>;
+  focusArea?: 'arms' | 'legs' | 'full' | 'idle' | 'combine' | 'watch' | 'teach';
+  showArrows?: boolean;
 }
 
-// MediaPipe Pose Connections
 const POSE_CONNECTIONS = [
   // Torso
   [11, 12], [11, 23], [12, 24], [23, 24],
@@ -34,7 +29,15 @@ const POSE_CONNECTIONS = [
   [0, 4], [4, 5], [5, 6], [6, 8]
 ];
 
-export default function SkeletonCanvas({ landmarks, width, height, jointScores }: SkeletonCanvasProps) {
+export default function SkeletonCanvas({ 
+  landmarks, 
+  refLandmarks,
+  width, 
+  height, 
+  jointScores,
+  focusArea,
+  showArrows = true
+}: SkeletonCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
   const getColorForScore = (score?: number) => {
@@ -42,6 +45,13 @@ export default function SkeletonCanvas({ landmarks, width, height, jointScores }
     if (score >= 85) return '#4ade80'; // Green
     if (score >= 70) return '#facc15'; // Yellow
     return '#f87171'; // Red
+  };
+
+  const isJointInFocus = (idx: number) => {
+    if (!focusArea || focusArea === 'full' || focusArea === 'combine' || focusArea === 'teach' || focusArea === 'watch' || focusArea === 'idle') return true;
+    if (focusArea === 'arms') return idx >= 11 && idx <= 16;
+    if (focusArea === 'legs') return idx >= 23 && idx <= 32;
+    return true;
   };
 
   useEffect(() => {
@@ -54,37 +64,122 @@ export default function SkeletonCanvas({ landmarks, width, height, jointScores }
 
     if (!landmarks || landmarks.length === 0) return;
 
-    // Draw Connections
-    ctx.lineWidth = 4;
-    POSE_CONNECTIONS.forEach(([i, j]) => {
-      const p1 = landmarks[i];
-      const p2 = landmarks[j];
+    // Helper to draw a skeleton
+    const drawSkeleton = (
+      points: PoseLandmark[], 
+      isReference: boolean = false,
+      offsetX: number = 0,
+      offsetY: number = 0
+    ) => {
+      ctx.lineWidth = isReference ? 2 : 4;
       
-      if (!p1 || !p2) return;
-      if ((p1.visibility || 1) < 0.5 || (p2.visibility || 1) < 0.5) return;
+      POSE_CONNECTIONS.forEach(([i, j]) => {
+        const p1 = points[i];
+        const p2 = points[j];
+        
+        if (!p1 || !p2) return;
+        if ((p1.visibility || 1) < 0.5 || (p2.visibility || 1) < 0.5) return;
 
-      const score = jointScores ? (jointScores[i] + jointScores[j]) / 2 : undefined;
-      ctx.strokeStyle = getColorForScore(score);
-      
-      ctx.beginPath();
-      ctx.moveTo(p1.x * width, p1.y * height);
-      ctx.lineTo(p2.x * width, p2.y * height);
-      ctx.stroke();
-    });
+        // Focus Dimming
+        const inFocus = isReference || (isJointInFocus(i) || isJointInFocus(j));
+        ctx.globalAlpha = inFocus ? (isReference ? 0.3 : 1.0) : 0.15;
 
-    // Draw Joints
-    landmarks.forEach((p, index) => {
-      if ((p.visibility || 1) < 0.5) return;
-      
-      const score = jointScores ? jointScores[index] : undefined;
-      ctx.fillStyle = getColorForScore(score);
-      
-      ctx.beginPath();
-      ctx.arc(p.x * width, p.y * height, 5, 0, 2 * Math.PI);
-      ctx.fill();
-    });
+        if (isReference) {
+          ctx.strokeStyle = '#60a5fa'; // Translucent Blue
+        } else {
+          const score = jointScores ? (jointScores[i] + jointScores[j]) / 2 : undefined;
+          ctx.strokeStyle = getColorForScore(score);
+        }
+        
+        ctx.beginPath();
+        ctx.moveTo((p1.x + offsetX) * width, (p1.y + offsetY) * height);
+        ctx.lineTo((p2.x + offsetX) * width, (p2.y + offsetY) * height);
+        ctx.stroke();
+      });
 
-  }, [landmarks, width, height, jointScores]);
+      // Draw Joints
+      points.forEach((p, index) => {
+        if ((p.visibility || 1) < 0.5) return;
+        
+        const inFocus = isReference || isJointInFocus(index);
+        ctx.globalAlpha = inFocus ? (isReference ? 0.3 : 1.0) : 0.15;
+
+        if (isReference) {
+          ctx.fillStyle = '#60a5fa';
+        } else {
+          const score = jointScores ? jointScores[index] : undefined;
+          ctx.fillStyle = getColorForScore(score);
+        }
+        
+        ctx.beginPath();
+        ctx.arc((p.x + offsetX) * width, (p.y + offsetY) * height, isReference ? 3 : 5, 0, 2 * Math.PI);
+        ctx.fill();
+      });
+      ctx.globalAlpha = 1.0;
+    };
+
+    // 1. Draw Ghost Reference Skeleton
+    if (refLandmarks && refLandmarks.length > 0) {
+      // Align reference to user's root (mid-hip)
+      const uMidHipX = (landmarks[23].x + landmarks[24].x) / 2;
+      const uMidHipY = (landmarks[23].y + landmarks[24].y) / 2;
+      const rMidHipX = (refLandmarks[23].x + refLandmarks[24].x) / 2;
+      const rMidHipY = (refLandmarks[23].y + refLandmarks[24].y) / 2;
+      
+      const dx = uMidHipX - rMidHipX;
+      const dy = uMidHipY - rMidHipY;
+      
+      // Only draw ghost if user is roughly in the same spot, else it looks crazy
+      if (Math.abs(dx) < 0.3 && Math.abs(dy) < 0.3) {
+         drawSkeleton(refLandmarks, true, dx, dy);
+      }
+    }
+
+    // 2. Draw User Skeleton
+    drawSkeleton(landmarks, false);
+
+    // 3. Draw Correction Arrows
+    if (showArrows && refLandmarks && refLandmarks.length > 0) {
+      const arrows = generateCorrectionArrows(landmarks, refLandmarks);
+      
+      arrows.forEach(arrow => {
+        ctx.beginPath();
+        
+        // Draw dashed arrow line
+        ctx.setLineDash([5, 5]);
+        ctx.moveTo(arrow.startX * width, arrow.startY * height);
+        ctx.lineTo(arrow.endX * width, arrow.endY * height);
+        
+        // Glow effect
+        ctx.shadowBlur = 10;
+        ctx.shadowColor = '#eab308'; // Yellow
+        ctx.strokeStyle = '#facc15';
+        ctx.lineWidth = 3;
+        ctx.stroke();
+        
+        ctx.setLineDash([]); // Reset
+        
+        // Draw arrowhead
+        const headlen = 10;
+        ctx.beginPath();
+        ctx.moveTo(arrow.endX * width, arrow.endY * height);
+        ctx.lineTo(
+          arrow.endX * width - headlen * Math.cos(arrow.angle - Math.PI / 6),
+          arrow.endY * height - headlen * Math.sin(arrow.angle - Math.PI / 6)
+        );
+        ctx.lineTo(
+          arrow.endX * width - headlen * Math.cos(arrow.angle + Math.PI / 6),
+          arrow.endY * height - headlen * Math.sin(arrow.angle + Math.PI / 6)
+        );
+        ctx.fillStyle = '#facc15';
+        ctx.fill();
+        
+        // Reset shadow
+        ctx.shadowBlur = 0;
+      });
+    }
+
+  }, [landmarks, refLandmarks, width, height, jointScores, focusArea, showArrows]);
 
   return (
     <canvas 

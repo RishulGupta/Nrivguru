@@ -26,6 +26,7 @@ export default function Practice() {
 
   const [hasWebcam, setHasWebcam] = useState(false);
   const [webcamError, setWebcamError] = useState('');
+  const [isMirrorMode, setIsMirrorMode] = useState(true);
   
   // Data
   const [routine, setRoutine] = useState<Routine | null>(null);
@@ -276,14 +277,17 @@ export default function Practice() {
           <button onClick={() => sendSessionEvent({ type: 'TOGGLE_SEATED' })} className={`px-3 py-1.5 rounded-full border backdrop-blur-md text-xs font-semibold transition-colors ${isSeatedMode ? 'bg-primary/20 border-primary text-primary' : 'bg-black/40 border-white/10 text-white'}`}>
             Seated {isSeatedMode ? 'ON' : 'OFF'}
           </button>
+          <button onClick={() => setIsMirrorMode(!isMirrorMode)} className={`px-3 py-1.5 rounded-full border backdrop-blur-md text-xs font-semibold transition-colors ${isMirrorMode ? 'bg-primary/20 border-primary text-primary' : 'bg-black/40 border-white/10 text-white'}`}>
+            Mirror {isMirrorMode ? 'ON' : 'OFF'}
+          </button>
         </div>
       </header>
 
       <main className="flex-1 flex flex-col lg:flex-row w-full h-full relative">
         {/* ── LEFT: Reference video ── */}
-        <div className="flex-1 relative bg-gray-900 border-r border-white/10">
-          <video ref={refVideoRef} className="w-full h-full object-contain" muted playsInline />
-          <div className="absolute inset-0 pointer-events-none">
+        <div className="flex-1 relative bg-gray-900 border-r border-white/10 overflow-hidden">
+          <video ref={refVideoRef} className={`w-full h-full object-contain transition-transform ${isMirrorMode ? 'scale-x-[-1]' : ''}`} muted playsInline />
+          <div className={`absolute inset-0 pointer-events-none transition-transform ${isMirrorMode ? 'scale-x-[-1]' : ''}`}>
             {currentRefPose && (
               <SkeletonCanvas landmarks={currentRefPose} width={1280} height={720} />
             )}
@@ -304,6 +308,9 @@ export default function Practice() {
             {userPose && (
               <SkeletonCanvas 
                  landmarks={userPose} 
+                 refLandmarks={currentRefPose}
+                 focusArea={phase as any}
+                 showArrows={phase === 'arms' || phase === 'legs' || phase === 'combine' || phase === 'full'}
                  width={640} 
                  height={480} 
                  jointScores={jointScores.length > 0 ? Object.fromEntries(jointScores.map(j => [j.name, j.score])) as any : undefined} 
