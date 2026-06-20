@@ -40,7 +40,9 @@ export class CorrectionEngine {
   constructor() {
     const joints: JointId[] = [
       'left_shoulder', 'right_shoulder', 'left_elbow', 'right_elbow',
-      'left_hip', 'right_hip', 'left_knee', 'right_knee'
+      'left_wrist', 'right_wrist',
+      'left_hip', 'right_hip', 'left_knee', 'right_knee',
+      'left_ankle', 'right_ankle'
     ];
     joints.forEach(j => {
       this.stateMachine.set(j, {
@@ -51,6 +53,10 @@ export class CorrectionEngine {
       });
       this.smaHistory.set(j, []);
     });
+  }
+
+  public getState(jointId: JointId): JointState {
+    return this.stateMachine.get(jointId)?.state || 'MONITORING';
   }
 
   public analyze(currentScores: JointScore[], focusArea: FocusArea) {
@@ -206,7 +212,9 @@ export class CorrectionEngine {
   private isCoreJoint(id: string): id is JointId {
     return [
       'left_shoulder', 'right_shoulder', 'left_elbow', 'right_elbow',
-      'left_hip', 'right_hip', 'left_knee', 'right_knee'
+      'left_wrist', 'right_wrist',
+      'left_hip', 'right_hip', 'left_knee', 'right_knee',
+      'left_ankle', 'right_ankle'
     ].includes(id);
   }
 
@@ -216,8 +224,8 @@ export class CorrectionEngine {
 
   private isInFocusArea(id: JointId, focus: FocusArea): boolean {
     if (focus === 'full') return true;
-    if (focus === 'arms') return id.includes('shoulder') || id.includes('elbow');
-    if (focus === 'legs') return id.includes('hip') || id.includes('knee');
+    if (focus === 'arms') return id.includes('shoulder') || id.includes('elbow') || id.includes('wrist');
+    if (focus === 'legs') return id.includes('hip') || id.includes('knee') || id.includes('ankle');
     return false;
   }
 }

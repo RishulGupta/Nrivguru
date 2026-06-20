@@ -6,12 +6,21 @@ export class SpeechManager {
   private watchdogTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor() {
-    this.synthesis = window.speechSynthesis;
-    // Load voices. Browsers load them async.
-    if (this.synthesis.onvoiceschanged !== undefined) {
-      this.synthesis.onvoiceschanged = this.initVoice.bind(this);
+    if (typeof window !== 'undefined' && window.speechSynthesis) {
+      this.synthesis = window.speechSynthesis;
+      // Load voices. Browsers load them async.
+      if (this.synthesis.onvoiceschanged !== undefined) {
+        this.synthesis.onvoiceschanged = this.initVoice.bind(this);
+      }
+      this.initVoice();
+    } else {
+      // Dummy synthesis for Node/testing
+      this.synthesis = {
+        getVoices: () => [], speak: () => {}, cancel: () => {},
+        pause: () => {}, resume: () => {}, pending: false, speaking: false, paused: false,
+        onvoiceschanged: null
+      } as any;
     }
-    this.initVoice();
   }
 
   private initVoice() {

@@ -5,5 +5,8 @@
   "main": "index.ts",
   "dependencies": {
     "xstate": "^5.32.1"
+  },
+  "devDependencies": {
+    "vitest": "^4.1.9"
   }
 }
