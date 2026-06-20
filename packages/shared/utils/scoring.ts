@@ -1,5 +1,5 @@
-import { PoseLandmark, PoseFrame } from '../types/pose';
-import { JointScore, FinalScore } from '../types/routine';
+import type { PoseLandmark, PoseFrame } from '../types/pose';
+import type { JointScore, FinalScore } from '../types/routine';
 import { KEY_JOINT_INDICES, JOINT_DEFINITIONS } from './constants';
 
 export function distance(a: PoseLandmark, b: PoseLandmark): number {

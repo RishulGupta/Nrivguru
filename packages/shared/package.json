@@ -3,5 +3,7 @@
   "version": "1.0.0",
   "private": true,
   "main": "index.ts",
-  "dependencies": {}
+  "dependencies": {
+    "xstate": "^5.32.1"
+  }
 }

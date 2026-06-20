@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { ArrowLeft, Shield, Video, Moon, Sun, Trash2, Download, Camera, Languages, Wifi, WifiOff } from 'lucide-react';
+import { ArrowLeft, Video, Moon, Sun, Trash2, Download, WifiOff, Shield, Camera, Languages } from 'lucide-react';
 import { useAuthStore } from '../store/useStore';
 import { supabase } from '../lib/supabase';
 

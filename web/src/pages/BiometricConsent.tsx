@@ -16,7 +16,7 @@ export default function BiometricConsent() {
         p_user_id: session.user.id,
         p_display_name: session.user.user_metadata?.username || session.user.email?.split('@')[0] || 'User',
         p_avatar_url: null
-      }).catch(() => {});
+      }).then(() => {}, () => {});
     }
     navigate('/auth');
   };

@@ -184,7 +184,7 @@ export default function Share() {
           title: 'My Taal Practice',
           text: shareText,
           url: window.location.origin
-        }).catch(() => {});
+        }).then(() => {}, () => {});
       }
     } else {
       alert(`Share via ${target || 'system'} is not supported. Use the download button instead.`);

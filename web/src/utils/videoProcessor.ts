@@ -180,7 +180,6 @@ export async function sliceVideo(
       };
 
       // Seek-based frame capture: seek to each time position and draw to canvas
-      const chunkDurationMs = endTimeMs - startTimeMs;
       const frameIntervalMs = 100; // 10fps for slow-mo clip
       let currentFrameTime = startTimeMs;
 

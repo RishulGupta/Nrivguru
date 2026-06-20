@@ -44,7 +44,7 @@ export default function History() {
             setHistory(MOCK_HISTORY);
           }
         })
-        .catch(() => setHistory(MOCK_HISTORY));
+        .then(() => {}, () => setHistory(MOCK_HISTORY));
     } else {
       setHistory(MOCK_HISTORY);
     }
