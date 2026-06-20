@@ -6,7 +6,11 @@ export type JointId =
   | 'left_hip' 
   | 'right_hip' 
   | 'left_knee' 
-  | 'right_knee';
+  | 'right_knee'
+  | 'left_wrist'
+  | 'right_wrist'
+  | 'left_ankle'
+  | 'right_ankle';
 
 export type Severity = 'mild' | 'moderate' | 'severe';
 
@@ -140,19 +144,87 @@ export const PhraseDatabase: Record<JointId, Record<Severity, Omit<PhraseEntry, 
   },
   right_knee: {
     mild: {
-      midMovement: ["Right knee line.", "Check right leg.", "Right knee direction."],
-      afterAction: ["Make sure your right knee tracks over your toes."],
-      praiseWhenFixed: ["Right knee alignment is good.", "Right leg looks strong."]
+      midMovement: ["Watch your right knee.", "Check your right knee.", "Right knee alignment."],
+      afterAction: ["Your right knee was slightly out of place. Remember to track it over your toes."],
+      praiseWhenFixed: ["Right knee tracking is perfect now.", "Great adjustment on that right knee."]
     },
     moderate: {
-      midMovement: ["Straighten right leg!", "Extend right knee.", "Push through right!"],
-      afterAction: ["You need to fully extend your right knee on this beat."],
-      praiseWhenFixed: ["Great extension on the right.", "Perfect straight leg."]
+      midMovement: ["Fix the right knee.", "Bend that right knee.", "Adjust right knee."],
+      afterAction: ["Your right knee bent too far inwards. Focus on pushing it outwards during the plié."],
+      praiseWhenFixed: ["Much better stability on the right knee.", "Nice deep bend on the right knee."]
     },
     severe: {
-      midMovement: ["Lock right knee!", "Straighten the right!", "Straight right leg!"],
-      afterAction: ["Your right leg is bent when it should be a perfectly straight line."],
-      praiseWhenFixed: ["Beautiful straight right leg!", "Excellent extension."]
+      midMovement: ["Right knee is way off!", "Watch that right knee!", "Don't let the right knee cave!"],
+      afterAction: ["We need to completely reset your right knee alignment. It's collapsing inwards, which is dangerous. Push it out."],
+      praiseWhenFixed: ["That's it! Right knee is totally safe and aligned now."]
+    }
+  },
+  left_wrist: {
+    mild: {
+      midMovement: ["Check left wrist.", "Watch left wrist.", "Left wrist alignment."],
+      afterAction: ["Your left wrist was slightly bent. Try to keep a straight line."],
+      praiseWhenFixed: ["Perfect left wrist alignment now."]
+    },
+    moderate: {
+      midMovement: ["Straighten left wrist.", "Fix left wrist.", "Adjust left wrist."],
+      afterAction: ["Your left wrist broke alignment. Keep the energy flowing through your fingertips."],
+      praiseWhenFixed: ["Much better control on the left wrist."]
+    },
+    severe: {
+      midMovement: ["Left wrist is breaking!", "Strong left wrist!", "Don't drop the left wrist!"],
+      afterAction: ["Your left wrist was completely collapsed. You lose all power when the wrist breaks. Keep it strong."],
+      praiseWhenFixed: ["Excellent power through the left wrist now!"]
+    }
+  },
+  right_wrist: {
+    mild: {
+      midMovement: ["Check right wrist.", "Watch right wrist.", "Right wrist alignment."],
+      afterAction: ["Your right wrist was slightly bent. Try to keep a straight line."],
+      praiseWhenFixed: ["Perfect right wrist alignment now."]
+    },
+    moderate: {
+      midMovement: ["Straighten right wrist.", "Fix right wrist.", "Adjust right wrist."],
+      afterAction: ["Your right wrist broke alignment. Keep the energy flowing through your fingertips."],
+      praiseWhenFixed: ["Much better control on the right wrist."]
+    },
+    severe: {
+      midMovement: ["Right wrist is breaking!", "Strong right wrist!", "Don't drop the right wrist!"],
+      afterAction: ["Your right wrist was completely collapsed. You lose all power when the wrist breaks. Keep it strong."],
+      praiseWhenFixed: ["Excellent power through the right wrist now!"]
+    }
+  },
+  left_ankle: {
+    mild: {
+      midMovement: ["Check left ankle.", "Watch left ankle.", "Left ankle alignment."],
+      afterAction: ["Your left ankle rolled slightly. Keep your weight centered."],
+      praiseWhenFixed: ["Perfect left ankle stability now."]
+    },
+    moderate: {
+      midMovement: ["Support left ankle.", "Fix left ankle.", "Adjust left ankle."],
+      afterAction: ["Your left ankle is rolling inwards. Think about lifting your arch."],
+      praiseWhenFixed: ["Much better support on the left ankle."]
+    },
+    severe: {
+      midMovement: ["Left ankle is rolling!", "Strong left ankle!", "Don't drop the left ankle!"],
+      afterAction: ["Your left ankle collapsed entirely. This is how sprains happen. Pull up through your leg."],
+      praiseWhenFixed: ["Excellent strength in the left ankle now!"]
+    }
+  },
+  right_ankle: {
+    mild: {
+      midMovement: ["Check right ankle.", "Watch right ankle.", "Right ankle alignment."],
+      afterAction: ["Your right ankle rolled slightly. Keep your weight centered."],
+      praiseWhenFixed: ["Perfect right ankle stability now."]
+    },
+    moderate: {
+      midMovement: ["Support right ankle.", "Fix right ankle.", "Adjust right ankle."],
+      afterAction: ["Your right ankle is rolling inwards. Think about lifting your arch."],
+      praiseWhenFixed: ["Much better support on the right ankle."]
+    },
+    severe: {
+      midMovement: ["Right ankle is rolling!", "Strong right ankle!", "Don't drop the right ankle!"],
+      afterAction: ["Your right ankle collapsed entirely. This is how sprains happen. Pull up through your leg."],
+      praiseWhenFixed: ["Excellent strength in the right ankle now!"]
     }
   }
 };

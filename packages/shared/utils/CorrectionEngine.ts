@@ -2,6 +2,8 @@ import type { JointScore } from '../types/routine';
 import { PhraseGenerator } from './CorrectionPhraseDB';
 import type { JointId, Severity } from './CorrectionPhraseDB';
 import { speechManager } from './SpeechManager';
+import type { StyleConfig } from './StyleConfig';
+import type { PersonalityProfile } from './TeacherPersonality';
 
 export type FocusArea = 'arms' | 'legs' | 'full';
 
@@ -31,6 +33,9 @@ export class CorrectionEngine {
   private smaHistory = new Map<JointId, number[]>();
   private phraseGen = new PhraseGenerator();
   
+  private styleConfig?: StyleConfig;
+  private personalityProfile?: PersonalityProfile;
+  
   private correctionCountInWindow = 0;
   private windowStartTime = 0;
   private readonly WINDOW_DURATION_MS = 5000;
@@ -53,6 +58,11 @@ export class CorrectionEngine {
       });
       this.smaHistory.set(j, []);
     });
+  }
+
+  public setConfig(style: StyleConfig, personality: PersonalityProfile) {
+    this.styleConfig = style;
+    this.personalityProfile = personality;
   }
 
   public getState(jointId: JointId): JointState {
@@ -81,15 +91,22 @@ export class CorrectionEngine {
         if (this.isProximal(jointId)) weight *= 1.5;
         if (this.isInFocusArea(jointId, focusArea)) weight *= 2.0;
         
+        // Apply genre-specific weights if available
+        if (this.styleConfig?.scoringWeights[jointId]) {
+          weight *= this.styleConfig.scoringWeights[jointId]!;
+        }
+
         const ctx = this.stateMachine.get(jointId)!;
         if (ctx.recentlyCorrected) weight *= 1.2;
         
         // Suppress if in frustration avoidance
         if (ctx.state === 'FRUSTRATION_AVOIDANCE') weight = 0;
 
+        // Use personality thresholds if available, otherwise default
+        const baseThresh = this.personalityProfile?.baseErrorThreshold || 25;
         let severity: Severity = 'mild';
-        if (diff > 40) severity = 'severe';
-        else if (diff > 25) severity = 'moderate';
+        if (diff > baseThresh + 20) severity = 'severe';
+        else if (diff > baseThresh) severity = 'moderate';
 
         return {
           ...score,
@@ -107,8 +124,9 @@ export class CorrectionEngine {
     }
 
     // 3. Check for errors
-    // Filter to those exceeding 20 deg error
-    const candidates = weightedScores.filter(s => s.diff > 20 && s.weightedError > 0);
+    const baseThresh = this.personalityProfile?.baseErrorThreshold || 20;
+    // Filter to those exceeding baseline error
+    const candidates = weightedScores.filter(s => s.diff > baseThresh && s.weightedError > 0);
     
     // Sort worst first
     candidates.sort((a, b) => b.weightedError - a.weightedError);

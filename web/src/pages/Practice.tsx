@@ -15,6 +15,9 @@ import { countingSystem } from '@taal/shared/utils/CountingSystem';
 import { TeachPhase } from '../components/TeachPhase';
 import { extractKeyframes } from '@taal/shared/utils/KeyframeExtractor';
 import { BeatIndicator } from '../components/BeatIndicator';
+import { TeacherPersonality } from '@taal/shared/utils/TeacherPersonality';
+import { sessionMemory } from '@taal/shared/utils/SessionMemory';
+import { DifficultyScaler } from '@taal/shared/utils/DifficultyScaler';
 
 export default function Practice() {
   const { id, chunkId } = useParams();
@@ -59,6 +62,25 @@ export default function Practice() {
   const [attemptComplete, setAttemptComplete] = useState(false);
   const [referencePoses, setReferencePoses] = useState<PoseFrame[]>([]);
   const [keyframes, setKeyframes] = useState<PoseFrame[]>([]);
+
+  // Phase 3 Modules
+  const difficultyScaler = useRef(new DifficultyScaler()).current;
+  const teacherPersonality = useRef(new TeacherPersonality()).current;
+
+  // Load session memory & style
+  useEffect(() => {
+    if (routine) {
+       sessionMemory.getLastSessionForRoutine(routine.id).then(lastSession => {
+         if (lastSession && lastSession.worstJoints.length > 0) {
+           speechManager.speak(`Welcome back! Let's focus on those ${lastSession.worstJoints[0].jointId.replace('_', ' ')}s today.`, "normal");
+         }
+       });
+    }
+  }, [routine, teacherPersonality]);
+
+  const effectivePlaybackRate = (phase === 'full' || phase === 'full_speed') 
+    ? difficultyScaler.getPlaybackRate() 
+    : playbackRate;
 
   // Load routine data
   useEffect(() => {
@@ -145,7 +167,7 @@ export default function Practice() {
     
     v.src = chunk.clip_url || '';
     v.load();
-    v.playbackRate = playbackRate;
+    v.playbackRate = effectivePlaybackRate;
     
     // Playback loop for the chunk
     const startMs = chunk.start_time_ms || 0;
@@ -155,7 +177,7 @@ export default function Practice() {
     
     if (phase !== 'teach' && phase !== 'idle' && !attemptComplete) {
        v.play().catch(e => console.warn("Auto-play prevented", e));
-       countingSystem.start(endMs - startMs, playbackRate);
+       countingSystem.start(endMs - startMs, effectivePlaybackRate);
     } else {
        v.pause();
        countingSystem.stop();
@@ -180,7 +202,7 @@ export default function Practice() {
       v.removeEventListener('timeupdate', onTimeUpdate);
       countingSystem.stop();
     };
-  }, [chunk, routine, phase, playbackRate, attemptComplete, sendSessionEvent]);
+  }, [chunk, routine, phase, effectivePlaybackRate, attemptComplete, sendSessionEvent]);
 
   // Main processing loop
   useEffect(() => {
@@ -211,6 +233,12 @@ export default function Practice() {
      const score = await finishAttempt();
      setFinalScore(score);
      
+     // Adapt Difficulty
+     difficultyScaler.evaluateAttempt(score.overallScore);
+     
+     // Musicality Coach (Phase 3)
+     // To be implemented using Web Worker pose history
+     
      // Provide verbal feedback
      if (score.overallScore > 85) {
        speechManager.speak("Excellent run! That was really accurate.", "praise");
@@ -230,6 +258,15 @@ export default function Practice() {
           p_missing_joints_flagged: false,
           p_duration_ms: chunk ? chunk.end_time_ms - chunk.start_time_ms : 0,
         }).then(() => {}, () => {});
+        
+        // Save to SessionMemory
+        sessionMemory.saveSession({
+          date: new Date().toISOString(),
+          routineId: id,
+          overallScore: score.overallScore,
+          worstJoints: [], // We can pull this from score breakdown
+          bestJoints: []
+        });
      }
   };
 
