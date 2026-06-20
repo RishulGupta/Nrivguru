@@ -13,10 +13,12 @@ interface PoseDetectionState {
   pendingAdjustment: { jointId: string, targetDiff: number } | null;
 }
 
+let globalWorker: Worker | null = null;
+let isGlobalWorkerReady = false;
+
 export function usePoseDetection() {
-  const workerRef = useRef<Worker | null>(null);
   const [state, setState] = useState<PoseDetectionState>({
-    isWorkerReady: false,
+    isWorkerReady: isGlobalWorkerReady,
     userPose: null,
     jointScores: [],
     currentArmScore: 0,
@@ -28,14 +30,20 @@ export function usePoseDetection() {
   const onAttemptFinishedRef = useRef<((score: FinalScore) => void) | null>(null);
 
   useEffect(() => {
-    // Instantiate worker
-    const worker = new Worker(new URL('../workers/pose.worker.ts', import.meta.url), { type: 'module' });
-    workerRef.current = worker;
+    // Instantiate global worker if it doesn't exist
+    if (!globalWorker) {
+      globalWorker = new Worker(new URL('../workers/pose.worker.ts', import.meta.url), { type: 'module' });
+      globalWorker.postMessage({ type: 'INIT' });
+    } else if (isGlobalWorkerReady) {
+      setState(s => ({ ...s, isWorkerReady: true }));
+    }
 
-    worker.onmessage = (e: MessageEvent) => {
+    const handleMessage = (e: MessageEvent) => {
       const { type, payload } = e.data;
 
       if (type === 'INIT_DONE') {
+        console.log("MAIN THREAD: Received INIT_DONE from worker");
+        isGlobalWorkerReady = true;
         setState(s => ({ ...s, isWorkerReady: true }));
       } else if (type === 'FRAME_RESULT') {
         setState(s => ({
@@ -54,16 +62,17 @@ export function usePoseDetection() {
       }
     };
 
-    worker.postMessage({ type: 'INIT' });
+    globalWorker.addEventListener('message', handleMessage);
 
     return () => {
-      worker.terminate();
+      globalWorker?.removeEventListener('message', handleMessage);
+      // We NEVER terminate the global worker, avoiding WASM deadlocks
     };
   }, []);
 
   const loadReference = useCallback((poses: PoseFrame[]) => {
-    if (workerRef.current) {
-      workerRef.current.postMessage({
+    if (globalWorker) {
+      globalWorker.postMessage({
         type: 'LOAD_REFERENCE',
         payload: { poses }
       });
@@ -71,11 +80,11 @@ export function usePoseDetection() {
   }, []);
 
   const processFrame = useCallback((videoElement: HTMLVideoElement, timestamp: number, focusArea: FocusArea) => {
-    if (!workerRef.current || !state.isWorkerReady) return;
+    if (!globalWorker || !state.isWorkerReady) return;
     
     // We must send an ImageBitmap to the worker for performance
     createImageBitmap(videoElement).then(bitmap => {
-      workerRef.current!.postMessage({
+      globalWorker!.postMessage({
         type: 'PROCESS_FRAME',
         payload: { bitmap, timestamp, focusArea }
       }, [bitmap]); // Transfer ownership to avoid copying
@@ -88,8 +97,8 @@ export function usePoseDetection() {
   const finishAttempt = useCallback((): Promise<FinalScore> => {
     return new Promise((resolve) => {
       onAttemptFinishedRef.current = resolve;
-      if (workerRef.current) {
-        workerRef.current.postMessage({ type: 'FINISH_ATTEMPT' });
+      if (globalWorker) {
+        globalWorker.postMessage({ type: 'FINISH_ATTEMPT' });
       } else {
         resolve({ armScore: 0, legScore: 0, timingScore: 0, overallScore: 0 });
       }

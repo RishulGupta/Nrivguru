@@ -315,7 +315,14 @@ export default function Practice() {
   };
 
   if (loadingData || !isWorkerReady) {
-    return <div className="min-h-screen bg-background flex items-center justify-center"><Loader2 className="w-8 h-8 text-primary animate-spin" /></div>;
+    return (
+      <div className="min-h-screen bg-neutral-900 flex items-center justify-center">
+        <div className="flex flex-col items-center gap-4 text-emerald-400">
+          <Loader2 className="w-8 h-8 animate-spin" />
+          <p>Loading session data... (Data: {!loadingData ? 'Ready' : 'Pending'}, Worker: {isWorkerReady ? 'Ready' : 'Pending'})</p>
+        </div>
+      </div>
+    );
   }
 
   // Determine current skeleton to show on reference
