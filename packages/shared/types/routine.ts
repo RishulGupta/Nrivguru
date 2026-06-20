@@ -5,6 +5,7 @@ export interface Routine {
   style_tag?: string;
   thumbnail_url?: string;
   pose_json_url?: string;
+  video_blob_url?: string; // Blob URL for local/guest routines (time-range seeking)
   total_chunks: number;
   duration_seconds: number;
   best_overall_score?: number;

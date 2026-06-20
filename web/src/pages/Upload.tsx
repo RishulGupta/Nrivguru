@@ -189,13 +189,20 @@ export default function Upload() {
 
       // 5. Prepare chunk data (skip laggy clip creation — use original video with time seeking)
       setProgress(65);
-      const finalChunks = chunksData.map((c: any) => ({
-        chunk_index: c.chunk_index,
-        start_time_ms: c.start_time_ms,
-        end_time_ms: c.end_time_ms,
-        description: c.description,
-        clip_url: '', // empty — Practice uses original video blob with time-range seeking
-      }));
+      const finalChunks = chunksData.map((c: any) => {
+        // Slice the pose frames that belong to this chunk's time range
+        const chunkPoses = frames.filter(
+          (f: any) => f.timestamp_ms >= c.start_time_ms && f.timestamp_ms <= c.end_time_ms
+        );
+        return {
+          chunk_index: c.chunk_index,
+          start_time_ms: c.start_time_ms,
+          end_time_ms: c.end_time_ms,
+          description: c.description,
+          clip_url: '', // empty — Practice uses original video blob with time-range seeking
+          pose_slice_json: chunkPoses, // Reference poses for scoring
+        };
+      });
       setProgress(90);
 
       // 6. Save to Database (graceful if Supabase not available)

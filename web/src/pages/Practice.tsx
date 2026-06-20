@@ -18,6 +18,7 @@ import { BeatIndicator } from '../components/BeatIndicator';
 import { TeacherPersonality } from '@taal/shared/utils/TeacherPersonality';
 import { sessionMemory } from '@taal/shared/utils/SessionMemory';
 import { DifficultyScaler } from '@taal/shared/utils/DifficultyScaler';
+import { getOriginalVideoUrl } from '../utils/videoStore';
 
 export default function Practice() {
   const { id, chunkId } = useParams();
@@ -169,7 +170,13 @@ export default function Practice() {
     const v = refVideoRef.current;
     if (!v || !chunk) return;
     
-    v.src = chunk.clip_url || '';
+    // Resolve the video source: chunks don't have individual clip_urls,
+    // they use time-range seeking on the original video.
+    const videoSrc = chunk.clip_url 
+      || getOriginalVideoUrl() 
+      || routine?.video_blob_url 
+      || '';
+    v.src = videoSrc;
     v.load();
     v.playbackRate = effectivePlaybackRate;
     

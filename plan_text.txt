@@ -1,0 +1,1040 @@
+Architectural Blueprint for an AI-Driven 
+Embodied Dance Pedagogy System 
+SECTION 1: Core Teaching Loop Design 
+The fundamental efficacy of an artificial dance instructor relies on its ability to emulate the 
+cognitive and sensorimotor feedback loops utilized in human-led dance pedagogy. Dance is a 
+complex embodied activity requiring the continuous integration of proprioceptive, visual, and 
+auditory information1. In a digital environment, the system must parse incoming kinematic data, 
+identify critical deviations, and deliver precise, non-overlapping verbal cues that respect the 
+limitations of human cognitive load. 
+1a. The Real-Time Correction Engine 
+To simulate a live instructor, the real-time correction engine must dictate what to say, when to 
+say it, and how to deliver it within a 500–1000 millisecond window during an active attempt. 
+a) Priority Queue System During the execution of a complex movement sequence, multiple 
+joints may deviate from the reference trajectory simultaneously. Emitting corrections for all 
+errors concurrently induces cognitive overload and violates the principles of spaced practice2. 
+The system employs a hierarchical priority queue to determine the single most critical joint to 
+correct. 
+The queue operates on a weighted sorting algorithm. First, joints falling within the active lesson 
+phase (e.g., "arms only") receive a 2.0x weight multiplier to enforce the current focus area. 
+Second, the system applies a proximal-to-distal priority matrix. Motor control initiates at the 
+core and radiates outward; correcting a proximal joint (like the shoulder) often organically 
+resolves distal deviations (like the wrist)2. Therefore, shoulders and hips receive a higher base 
+priority than elbows and knees. Finally, a historical weighting mechanism is applied. If a joint 
+was corrected in the previous computational cycle, it receives a temporary priority boost to 
+facilitate closed-loop feedback, ensuring the user completes the correction before the system 
+abruptly shifts its focus to a new body part. Beginner modes prioritize gross motor alignments 
+(hips, shoulders), while advanced modes unlock distal tracking (wrists, ankles) for fine-tuning. 
+b) Timing & Delivery Rapid ballistic movements cannot be corrected mid-flight due to the 
+human cognitive processing delay. Therefore, real-time cues must be targeted at continuous 
+actions or strategically queued. Delivery relies on the window.speechSynthesis API, which must 
+be tightly controlled to prevent audio overlap4. The system utilizes the speaking and pending 
+attributes to monitor the audio thread. If an error is detected but the API is currently speaking, 
+the new correction is dropped to prevent queue buildup, unless its severity exceeds a 40° 
+deviation threshold. In the case of severe errors, speechSynthesis.cancel() is invoked to 
+interrupt the current phrase and immediately inject the urgent cue4. To accommodate the rapid 
+pace of movement, phrases delivered mid-routine are truncated to ultra-short imperatives 
+(e.g., "Left arm up!") to fit within a 1-second delivery window, while longer analytical phrases are 
+reserved for post-attempt reviews. Voice dynamics are modulated programmatically: severe 
+
+errors trigger a higher pitch (1.2) and rate (1.2) to convey urgency, while mild corrections utilize 
+a calm, normalized tone (pitch 1.0, rate 1.0)6. 
+c) Positive Reinforcement Motor memory consolidation relies heavily on positive 
+reinforcement when a target kinematic state is achieved8. The system tracks improvement by 
+maintaining a Simple Moving Average (SMA) of the Mean Absolute Error (MAE) for each joint 
+over a rolling 10-frame window. If a previously flagged joint exhibits a >20% reduction in its 
+MAE compared to its historical baseline over three consecutive windows, a VERIFYING_FIX 
+state triggers an immediate praise utterance. To ensure every attempt ends on a positive note, 
+the session concludes with a "sandwich feedback" algorithm: the system first highlights the 
+joint with the lowest overall error, gently notes the primary area for improvement based on the 
+highest average deviation, and ends with a generalized encouraging statement. 
+d) The Correction Phrase Database 
+To prevent robotic repetition, the phrase database utilizes a nested data structure mapping 8 
+core joints across 3 severity thresholds. The system selects phrases using a bag-of-words 
+shuffle algorithm drawn without replacement until all variations are exhausted. 
+Joint 
+Severity 
+Mid-Moveme
+nt (1-2s) 
+After-Action 
+(3-4s) 
+Praise When 
+Fixed 
+Left Shoulder 
+Mild (15-25°) 
+"Watch the left 
+shoulder." / 
+"Left shoulder 
+placement." / 
+"Check left 
+shoulder." 
+"Your left 
+shoulder 
+drifted slightly 
+out of 
+alignment. 
+Keep it 
+engaged." 
+"Good 
+shoulder 
+placement." / 
+"Left shoulder 
+looks great." 
+ 
+Moderate 
+(25-40°) 
+"Left shoulder 
+up!" / "Lift the 
+left shoulder." / 
+"Raise left 
+side." 
+"You need to 
+elevate your 
+left shoulder to 
+match the 
+horizontal line." 
+"Much better 
+on the left 
+shoulder!" / 
+"That is the 
+right height." 
+ 
+Severe (>40°) 
+"Raise that left 
+shoulder!" / 
+"Left shoulder 
+dropping!" / 
+"Lift the left!" 
+"Your left 
+shoulder 
+completely 
+dropped. 
+Focus on 
+keeping it 
+elevated." 
+"There it is! 
+Perfect 
+shoulder 
+height." / 
+"Excellent 
+correction." 
+
+Right 
+Shoulder 
+Mild (15-25°) 
+"Level the right 
+shoulder." / 
+"Right shoulder 
+check." / 
+"Watch the 
+right." 
+"Pay attention 
+to the slight 
+dip in your 
+right shoulder." 
+"Nice right 
+shoulder 
+control." / 
+"Right side is 
+solid." 
+ 
+Moderate 
+(25-40°) 
+"Right shoulder 
+higher!" / "Push 
+the right 
+shoulder up." / 
+"Lift right!" 
+"Your right 
+shoulder 
+needs more 
+elevation on 
+that extension." 
+"Great 
+adjustment on 
+the right 
+shoulder." / 
+"Right shoulder 
+fixed." 
+ 
+Severe (>40°) 
+"Lift your right 
+shoulder!" / 
+"Right shoulder 
+is lost!" / "Pull 
+up right!" 
+"You are losing 
+the frame on 
+your right side. 
+Lift from the 
+joint." 
+"Yes! Right 
+shoulder is 
+locked in." / 
+"Beautifully 
+leveled." 
+Left Elbow 
+Mild (15-25°) 
+"Soften left 
+elbow." / "Left 
+elbow line." / 
+"Check left 
+arm." 
+"Your left 
+elbow is a bit 
+too stiff, try to 
+soften the line." 
+"Good elbow 
+shape." / "Nice 
+line on the left." 
+ 
+Moderate 
+(25-40°) 
+"Bend left 
+elbow!" / 
+"Shape the left 
+arm." / "Curve 
+the left!" 
+"You are 
+locking your 
+left elbow. 
+Keep a natural, 
+soft bend." 
+"That is the 
+right elbow 
+angle!" / 
+"Perfect bend." 
+ 
+Severe (>40°) 
+"Unlock left 
+elbow!" / "Bend 
+it left!" / "Left 
+arm too 
+straight!" 
+"Your left arm 
+is completely 
+straight. It 
+needs a 
+distinct bend." 
+"Excellent! Left 
+elbow is fixed." 
+/ "Much better 
+arm shape." 
+Right Elbow 
+Mild (15-25°) 
+"Right elbow 
+check." / "Right 
+"Keep an eye 
+on the angle of 
+"Nice shape on 
+the right arm." / 
+
+arm shape." / 
+"Soften the 
+right." 
+your right 
+elbow." 
+"Right elbow is 
+good." 
+ 
+Moderate 
+(25-40°) 
+"Straighten 
+right elbow!" / 
+"Extend right 
+arm." / "Reach 
+right!" 
+"You need 
+more 
+extension 
+through your 
+right elbow on 
+that beat." 
+"Much better 
+extension 
+there." / "Great 
+reach." 
+ 
+Severe (>40°) 
+"Reach right 
+fully!" / 
+"Straighten the 
+right!" / "Right 
+arm out!" 
+"Your right arm 
+is too bent. 
+Reach fully 
+outward to 
+complete the 
+line." 
+"Beautiful 
+reach on the 
+right side!" / 
+"Full extension, 
+perfect." 
+Left Hip 
+Mild (15-25°) 
+"Square left 
+hip." / "Left hip 
+placement." / 
+"Watch left 
+hip." 
+"Your left hip is 
+rotating slightly 
+outward. Keep 
+it squared." 
+"Hips are 
+squared 
+nicely." / "Good 
+hip alignment." 
+ 
+Moderate 
+(25-40°) 
+"Turn left hip 
+in!" / "Left hip 
+forward." / 
+"Square up 
+left!" 
+"Bring your left 
+hip forward to 
+square your 
+pelvis to the 
+front." 
+"Good hip 
+rotation." / "Left 
+hip is back in 
+place." 
+ 
+Severe (>40°) 
+"Left hip is 
+open!" / 
+"Square your 
+hips!" / "Close 
+the left hip!" 
+"Your left hip is 
+completely 
+open, breaking 
+the line. Square 
+up." 
+"Perfectly 
+squared hips 
+now!" / 
+"Excellent 
+pelvic control." 
+Right Hip 
+Mild (15-25°) 
+"Right hip 
+check." / 
+"Watch right 
+hip." / "Level 
+"Notice the 
+slight drop in 
+your right hip. 
+Keep it level." 
+"Right hip looks 
+solid." / "Good 
+level on the 
+hips." 
+
+the right hip." 
+ 
+Moderate 
+(25-40°) 
+"Lift right hip!" / 
+"Right side up." 
+/ "Pull up right 
+hip!" 
+"You are 
+sinking into 
+your right hip. 
+Pull up from 
+the core." 
+"Much better 
+weight 
+distribution." / 
+"Great hip lift." 
+ 
+Severe (>40°) 
+"Pull right hip 
+up!" / "Don't 
+sink right!" / 
+"Lift the right 
+side!" 
+"You are 
+collapsing onto 
+your right hip. 
+Engage your 
+core to lift it." 
+"Great lift on 
+the right side!" 
+/ "Hips are 
+perfectly level." 
+Left Knee 
+Mild (15-25°) 
+"Soften left 
+knee." / "Left 
+knee check." / 
+"Watch the left 
+leg." 
+"Your left knee 
+is slightly stiff 
+on the landing. 
+Soften it." 
+"Good bend in 
+the left knee." / 
+"Nice soft 
+landing." 
+ 
+Moderate 
+(25-40°) 
+"Bend left 
+knee!" / "Plie 
+left." / "Sink into 
+the left!" 
+"You need a 
+deeper bend in 
+your left knee 
+for stability." 
+"Nice depth on 
+the left side." / 
+"Great plie." 
+ 
+Severe (>40°) 
+"Left knee 
+deep!" / "Bend 
+the left!" / 
+"Don't lock the 
+left!" 
+"Your left leg is 
+totally stiff. You 
+must bend the 
+knee to absorb 
+the 
+movement." 
+"Excellent plie 
+on the left!" / 
+"Much safer 
+knee bend." 
+Right Knee 
+Mild (15-25°) 
+"Right knee 
+line." / "Check 
+right leg." / 
+"Right knee 
+direction." 
+"Make sure 
+your right knee 
+tracks over 
+your toes." 
+"Right knee 
+alignment is 
+good." / "Right 
+leg looks 
+strong." 
+ 
+Moderate 
+(25-40°) 
+"Straighten 
+right leg!" / 
+"You need to 
+fully extend 
+"Great 
+extension on 
+
+"Extend right 
+knee." / "Push 
+through right!" 
+your right knee 
+on this beat." 
+the right." / 
+"Perfect 
+straight leg." 
+ 
+Severe (>40°) 
+"Lock right 
+knee!" / 
+"Straighten the 
+right!" / 
+"Straight right 
+leg!" 
+"Your right leg 
+is bent when it 
+should be a 
+perfectly 
+straight line." 
+"Beautiful 
+straight right 
+leg!" / 
+"Excellent 
+extension." 
+e) The Correction State Machine 
+A finite state machine (FSM) governs the transition of pedagogical attention per joint. 
+The system defaults to the MONITORING state, continuously evaluating the FastDTW-aligned 
+angle differences. When a joint crosses the >20° threshold, it transitions to DETECTED_ERROR. 
+The phrase selection algorithm fires, synthesizing speech, and the state shifts to CORRECTING. 
+A strict cooldown timer (2,000ms) initiates to prevent nagging. Once the cooldown expires, the 
+system enters VERIFYING_FIX. If the joint's SMA improves by >20%, the state shifts to PRAISE 
+and then back to MONITORING. If the user fails to fix the error after 3 consecutive loops 
+through the CORRECTING state, the system transitions to FRUSTRATION_AVOIDANCE, 
+suppressing further cues for this specific joint during the current attempt to preserve the user's 
+morale, logging the persistent error for the After-Action Review instead. 
+SECTION 2: The Lesson Plan Architecture 
+The pedagogical framework breaks continuous movements into digestible, physically isolated 
+tasks, mirroring the cognitive load theory applied in physical skill acquisition1. 
+2a. Progressive Lesson Flow 
+Phase 0 — TEACH THE MOVE Before practice begins, the system extracts the 3 to 5 most 
+structurally significant keyframes from the video chunk. Algorithmically, this is achieved by 
+calculating the temporal local maxima of the overall kinetic energy. By computing the sum of 
+the Euclidean displacements of all body landmarks between frames, 
+, the system isolates moments of peak 
+extension or directional shifts9. These extracted keyframes are rendered as static Canvas 2D 
+overlays, accompanied by descriptive synthesized voiceovers (e.g., "First, the arm sweeps up"). 
+Phases 1 to 5 — Isolation and Combination During Phase 2 (Arms Only) and Phase 3 (Legs 
+Only), the visual isolation of non-active body parts is achieved by manipulating the globalAlpha 
+property of the Canvas 2D context during the skeleton rendering loop11. Inactive bones are 
+rendered at 0.15 opacity, naturally drawing the user's foveal vision to the focus area without 
+entirely removing the body's grounding context. The scoring algorithms adjust dynamically; in 
+
+Phase 2, the denominator for the total score is restricted to joints 11-16 (shoulders, elbows, 
+wrists)12. If a user consistently scores above 85% in Phase 4 (Combine at 0.75x), a dynamic 
+routing system allows them to bypass isolation phases in subsequent chunks, proceeding 
+directly to full speed. 
+2b. The Counting System 
+Precise auditory synchronization is non-negotiable. Using standard JavaScript setInterval for a 
+metronome results in severe timing jitter due to the single-threaded event loop13. 
+The counting system relies on the Web Audio API's hardware clock 
+(AudioContext.currentTime). Following the "A Tale of Two Clocks" scheduling paradigm, a 
+lightweight JavaScript interval checks ahead and schedules audio buffer nodes in the future 
+directly on the audio hardware thread, guaranteeing sample-accurate playback13. When the 
+playbackRate shifts to 0.5x, the chunk duration doubles. The scheduling algorithm divides the 
+original reference chunk duration by 8 to establish the native beat interval, then multiplies this 
+interval by 
+. Counts 1 and 5 utilize distinct audio samples with higher 
+dynamic compression and pitch to simulate a teacher's natural accentuation. Visually, a central 
+pulsating ring operates via CSS transforms, triggered by a requestAnimationFrame loop that 
+polls AudioContext.currentTime to ensure the visual expansion synchronizes precisely with the 
+audio transient16. 
+2c. The After-Action Review (AAR) Screen 
+Following an attempt, raw frame-by-frame data is condensed into actionable visual intelligence. 
+Rendering overlaid skeletons efficiently on Canvas 2D requires spatial normalization. The 
+system calculates a translation vector 
+ (using the mid-hip 
+coordinate) and applies ctx.translate() to ensure both skeletons share a unified origin18. 
+For joints exceeding the 25° error threshold, indicator arrows are rendered. The rotation angle 
+of the arrow is derived from the spatial vector between the reference joint and the user's joint 
+using Math.atan2(dy, dx), rotating the Canvas context to draw a high-contrast red arrow 
+pointing toward the correct spatial position20. Score progression is displayed via a lightweight 
+SVG line chart that visualizes the delta between attempts. Improvement is defined strictly by 
+the percentage reduction in MAE compared to the previous attempt. If the user improved their 
+arms but degraded their legs, the system explicitly acknowledges this divergence: "Your arm 
+path improved by 15%, but we lost some bend in the knees. Let's balance them both." 
+SECTION 3: Technical Architecture 
+3a. The Correction Pipeline 
+To maintain the strict 15fps performance budget required for real-time webcam analysis, the 
+architecture isolates the computer vision processing from the main UI thread using Web 
+Workers22. 
+The main thread captures the webcam via requestAnimationFrame and draws the 
+
+HTMLVideoElement to an OffscreenCanvas. This canvas context generates an ImageBitmap via 
+transferToImageBitmap(), which is passed to the Web Worker via postMessage. This zero-copy 
+transfer circumvents the computationally expensive serialization of image arrays24. Inside the 
+worker, MediaPipe Pose operates via a WebAssembly/WebGL delegate, extracting 33 
+normalized 3D landmarks12. The worker then calculates the 8 critical joint angles using inverse 
+tangent mathematics: 
+3. Because users 
+naturally drift off-beat, comparing the user's instantaneous frame to the reference video's 
+current frame is flawed. The worker applies a FastDTW (Dynamic Time Warping) algorithm to 
+align the user's recent sequence buffer with the reference timeline, calculating the true 
+spatiotemporal error26. These spatial errors are transmitted back to the main thread, where the 
+Correction Engine enforces a debouncing throttle before invoking SpeechSynthesis.speak(). 
+3b. The Phrase Selection Algorithm 
+The algorithm filters and weights joint scores to determine the most pedogogically sound 
+correction. 
+ 
+ 
+ 
+TypeScript 
+function selectCorrection(​
+  currentScores: JointScore[],​
+  stateMachine: Map<JointId, JointState>,​
+  focusArea: 'arms' | 'legs' | 'full',​
+  speechSynthesis: SpeechSynthesis​
+): void {​
+  // Prevent overlap unless critical severity triggers an interrupt​
+  if (speechSynthesis.speaking) return; ​
+​
+  // 1. Filter and weight current scores based on pedagogy​
+  let weightedScores = currentScores.map(score => {​
+    let weight = 1.0;​
+    if (isProximal(score.jointId)) weight *= 1.5; // Prioritize core/shoulders/hips​
+    if (isInFocusArea(score.jointId, focusArea)) weight *= 2.0; // Enforce lesson phase​
+    if (stateMachine.get(score.jointId).recentlyCorrected) weight *= 1.2; // Follow-through​
+    return { ...score, weightedError: score.error * weight };​
+  });​
+​
+  // 2. Check for praise conditions first​
+
+  const improvedJoint = checkImprovement(stateMachine, currentScores);​
+  if (improvedJoint) {​
+     triggerPraise(improvedJoint);​
+     return;​
+  }​
+​
+  // 3. Find worst joint​
+  weightedScores.sort((a, b) => b.weightedError - a.weightedError);​
+  const worst = weightedScores[0];​
+​
+  // 4. Execute correction if above baseline threshold​
+  if (worst.error > 20) {​
+     const phrase = getUniquePhrase(worst.jointId, worst.severity);​
+     speak(phrase);​
+     updateStateMachine(worst.jointId, 'CORRECTING');​
+  }​
+}​
+ 
+If the user drops out of the frame entirely, the MediaPipe visibility score falls below a 
+confidence threshold (0.5), triggering a specialized error handler: "Step back, I can't see your 
+full body"25. 
+3c. Performance Budget 
+Standard DTW computation possesses an 
+ time complexity, which would rapidly 
+consume the CPU budget. The system mitigates this by utilizing the FastDTW approximation, 
+reducing complexity to 
+ by projecting the alignment path from lower resolutions and 
+employing a Sakoe-Chiba constraint band28. Re-scoring and DTW alignment occur every 3rd 
+frame (~200ms interval). This cadence provides sufficient granularity for fluid visual feedback 
+while halving the computational overhead. The memory footprint for storing a 5-minute 
+session's historical score array is approximately 1.8 MB, comfortably managed by browser 
+garbage collection. 
+SECTION 4: User Experience & Psychology 
+4a. Teacher Personality Design 
+A dance teacher's effectiveness is profoundly linked to their pedagogical personality1. The 
+system features an adaptable personality matrix based on the user's skill level. 
+●​ Encouraging/Beginner: High kinematic tolerance thresholds (30° deviation before 
+cueing). Utilizes expressive, metaphorical language. ("Feel the stretch through your 
+fingertips," "Let your shoulders float down"). 
+●​ Strict/Advanced: Low kinematic tolerance thresholds (15°). Highly specific, anatomical 
+
+cues focusing on technique. ("Lock the right elbow," "Square the pelvic floor"). The 
+system automatically shifts from the beginner to the advanced profile as the user's 
+historical MAE improves across sessions. 
+4b. Motivation & Progress 
+To build a sense of momentum, the system implements localized operant conditioning. If the 
+user maintains a "green" score (<15° error) across all active joints for 4 consecutive beats, a 
+subtle, highly compressed audio chime plays—a non-verbal reinforcement that does not 
+interrupt the music. Session progress is reinforced during transition screens: "You've mastered 
+3 out of 8 chunks. Let's tackle the bridge." Milestone moments trigger specialized speech 
+variations: "Your arm score is the highest it has been all week!" 
+4c. Error Handling UX 
+Systemic failures must never masquerade as user failures. If the webcam connection is lost, the 
+skeleton immediately fades to gray, video playback pauses, and the teacher states, "I've lost 
+your camera feed. Don't worry, your progress is saved. Step back into the frame when you're 
+ready." If a user gives up mid-attempt and stops moving, the system detects a near-zero 
+velocity profile, pauses the routine, and asks, "No problem. Do you want to slow it down, or try 
+a different move?" 
+SECTION 5: What Else Can We Add? 
+5a. Pre-Practice Warm-Up 
+A guided 2-minute mobility sequence primes the neuromuscular system and calibrates the 
+camera's tracking volume32. The system tracks simple joint isolations (e.g., neck rolls, shoulder 
+shrugs, hip circles) using MediaPipe, verifying the user's anatomical range of motion prior to 
+the complex routine. 
+5b. Difficulty Progression Across Chunks 
+Chunks are algorithmically sorted by a Kinematic Complexity Score. This score is calculated by 
+integrating the average joint velocity and the degree of asymmetrical limb movement over the 
+chunk's duration. The curriculum automatically orders the routine from the least to most 
+complex segments, dynamically reordering subsequent chunks based on the user's real-time 
+success rate. 
+5c. Cross-Session Memory 
+Using the browser's IndexedDB API, the system serializes a session summary object containing 
+the worst_performing_joints array and specific spatial weaknesses. Upon initiating the next 
+session, the teacher loads this profile, greeting the user with context: "Welcome back. Last time 
+we struggled with the left arm extensions. Let's see if we can perfect them today." 
+5d. Dance Style Adaptation 
+
+Different genres demand distinct pedagogical priorities33. For classical forms like Ballet, scoring 
+weights shift heavily to the hips, knees, and ankles (points 23-28) to enforce turnout and 
+posture12. Conversely, popular styles in India, such as Bollywood, place immense emphasis on 
+expressive mudras (hand gestures), rapid body isolations, and thumkas (hip thrusts)35. In the 
+Bollywood configuration, the scoring algorithm exponentially increases the weight on the wrist 
+and distal extremity landmarks (MediaPipe points 15-22). Correction phrases adapt to the 
+regional vernacular: "Sharpen that hand gesture," "More bounce in the hip," or "Keep the mudra 
+clear"35. 
+5e. Musicality Coaching 
+Matching a spatial pose is secondary if the user is entirely off-beat1. To measure musicality, the 
+system extracts the 1D velocity profile of the user's movement and performs a 
+cross-correlation with the reference dancer's velocity profile. The lag index of the 
+cross-correlation peak dictates temporal accuracy. If the lag is consistently negative, the 
+teacher provides timing-specific corrections: "You're rushing the beat. Wait for the 3." 
+5f. Social / Mirror Mode 
+In physical studios, students rely on mirrors to align themselves with the instructor38. The app 
+implements a true mirror mode by applying CSS transform: scaleX(-1) to both the webcam 
+feed and the reference video. This eliminates the cognitive load of spatial translation, allowing 
+the user to map their physical right arm directly to the teacher's visible "right" arm on the 
+screen. 
+5g. Teaching Different Skill Levels 
+Beginner levels suppress the scoring overlay entirely, replacing it with a simplified heat map, 
+while the teacher instructs, "Just try to follow the rhythm, don't worry about perfect accuracy." 
+Advanced levels display real-time angular degrees and velocity vectors, demanding precision 
+on highly subtle expressions and musicality. 
+SECTION 6: If YOU Were Building The Dance Teacher 
+From Scratch 
+If unconstrained by legacy code, the ideal pedagogical engine is built feature-by-feature as a 
+fully immersive, state-driven application. 
+6a & 6b. Greenfield Design Specifications 
+1. The Lesson Structure Engine 
+What it is: Orchestrates the macro-flow from warm-up to cool-down dynamically based on 
+user biometrics and success rates. Why it matters: Human teachers do not force a rigid 
+curriculum if a student is struggling; they pivot. How to build: Implemented as a hierarchical 
+state machine using XState. Transitions between states (WARMUP, TEACH, DRILL, REVIEW) are 
+
+guarded by algorithmic condition checks (e.g., averageScore > 60%). Edge cases: If the 
+session duration exceeds 20 minutes and kinematic scores begin dropping rapidly (indicating 
+physical fatigue), the engine overrides the curriculum and forces a COOL_DOWN state. 
+Pedagogy: Avoids overtraining and injury2. Priority/Effort: P0 / 5 days. 
+2. The Real-Time Voice Corrector 
+What it is: Synthesizes low-latency, context-aware verbal feedback during active movement. 
+Why it matters: Provides closed-loop motor feedback without requiring the user to break 
+visual focus on the reference1. How to build: A priority queue fed by the FastDTW output. 
+Calculates worst.error = max(abs(user.angle - ref.angle)). Uses SpeechSynthesis to deliver a 
+phrase from the database. Edge cases: If the Speech API hangs (a known Chrome issue), a 
+watchdog timer monitors speechSynthesis.pending and forcefully restarts the API if execution 
+stalls for >2000ms4. Pedagogy: Corrects proprioceptive drift instantly. Priority/Effort: P0 / 7 
+days. 
+3. The Counting System 
+What it is: A continuous audio/visual metronome providing the "5, 6, 7, 8" backbone. Why it 
+matters: Establishes the temporal framework essential for dance38. How to build: 
+AudioContext lookahead scheduling loop scheduling pre-recorded vocal samples exactly on 
+the beat interval. Edge cases: Backgrounding the browser tab pauses requestAnimationFrame. 
+The AudioContext hardware clock continues natively, instantly resyncing the visual UI ring upon 
+tab focus13. Pedagogy: Enforces rhythm over pure spatial imitation. Priority/Effort: P0 / 3 days. 
+4. The Progress Tracker 
+What it is: Visualizes session-over-session and attempt-over-attempt kinematic improvement. 
+Why it matters: Visual proof of progression is the strongest driver of user retention. 
+How to build: A React charting component plotting the normalized FastDTW distance over 
+time, using SVG paths with cubic bezier smoothing to hide minor frame-to-frame noise. 
+Edge cases: If a user performs catastrophically worse on one attempt, the smoothing 
+algorithm truncates the downward spike to avoid demoralization. 
+Pedagogy: Fosters a growth mindset. 
+Priority/Effort: P1 / 2 days. 
+5. The After-Action Review (AAR) 
+What it is: A post-mortem visual and verbal breakdown occurring immediately after a chunk 
+attempt. Why it matters: Consolidates learning while muscle memory is fresh2. How to build: 
+A React modal triggered on the CHUNK_COMPLETE state. Fetches the cached 
+worst_performing_joints array, overlays skeletons via ctx.translate, and renders directional 
+Math.atan2 vectors pointing out deviations18. Edge cases: Extreme deviation where the user is 
+facing the wrong way; the Euclidean distance check suppresses the overlay to prevent visual 
+spaghetti. Pedagogy: Bridges the gap between feeling the movement and seeing the result. 
+Priority/Effort: P0 / 4 days. 
+
+6. The Warm-Up Generator 
+What it is: Guides the user through a 2-minute mobility sequence prior to the routine. Why it 
+matters: Primes the neuromuscular system, reduces injury risk, and covertly verifies the 
+camera's tracking volume32. How to build: A hardcoded 3-step sequence (neck, shoulders, 
+hips) verified via simple boundary checks on MediaPipe joint coordinates. Edge cases: User 
+skipping warm-up. System warns them but allows bypass, reducing the kinematic intensity of 
+the first chunk. Pedagogy: Standard physical education practice. Priority/Effort: P2 / 2 days. 
+7. The Difficulty Scaler 
+What it is: Adapts video playback rate and tolerance thresholds dynamically. 
+Why it matters: Keeps the user in the optimal "flow state" of learning. 
+How to build: PID controller logic tracking the MAE. If the user scores <40% twice sequentially, 
+the controller output drops playbackRate to 0.5x and increases the error threshold to 30°. 
+Edge cases: User insists on full speed despite failing; the scaler offers a manual override 
+button. 
+Pedagogy: Scaffolding instructional support. 
+Priority/Effort: P1 / 3 days. 
+8. The Correction Memory 
+What it is: Recalls historical weaknesses across different days to personalize instruction. 
+Why it matters: Makes the AI feel like a dedicated, long-term coach. 
+How to build: Store a JSON blob in IndexedDB keyed by userId. Upon load, inject historical 
+worst joints into the priority queue with a 1.2x weight multiplier. 
+Edge cases: User deletes local storage. The system gracefully degrades to a blank slate 
+without crashing. 
+Pedagogy: Emphasizes long-term skill retention. 
+Priority/Effort: P1 / 2 days. 
+9. The Focus Director 
+What it is: Forces the user to perfect one mechanism by visually dimming the rest of the body. 
+Why it matters: Reduces cognitive load for complex multi-limb coordination1. How to build: 
+Manipulate CSS masking and Canvas globalAlpha during the requestAnimationFrame loop. Set 
+error thresholds for non-focus joints to 
+ so they are ignored by the scoring engine11. Edge 
+cases: User moves non-focus limbs wildly; the system ignores it entirely, strictly adhering to 
+the focus area. Pedagogy: Task simplification strategy. Priority/Effort: P0 / 1 day. 
+10. The Motivation Engine 
+What it is: Injects gamification, milestones, and praise based on micro-improvements. 
+Why it matters: Sustains engagement through the frustrating phases of motor learning. 
+How to build: Event listeners hooked to the scoring pipeline. Emits confetti and triggers 
+specialized SpeechSynthesis buffers when the consecutive_green_frames counter exceeds a 
+
+threshold. 
+Edge cases: Rapidly oscillating scores triggering spam praise. Fixed via a 5000ms debounce 
+on positive reinforcement. 
+Pedagogy: Operant conditioning. 
+Priority/Effort: P2 / 2 days. 
+11. The Musicality Coach 
+What it is: Evaluates temporal precision (rhythm) independently of spatial accuracy (pose). 
+Why it matters: Hitting a pose off-beat is incorrect in dance38. How to build: Extract the 1D 
+velocity profile of the user. Perform cross-correlation with the reference velocity. The lag index 
+dictates rushing vs dragging26. Edge cases: User stands perfectly still. Cross-correlation fails; 
+handled by checking variance before calculation. Pedagogy: Trains the ear, not just the body. 
+Priority/Effort: P1 / 4 days. 
+12. The Style Adaptor 
+What it is: Modifies scoring tolerances and vocabulary based on the specific dance genre. 
+Why it matters: Hip-hop requires bounce; Bollywood requires precise mudras; Ballet requires 
+rigid posture35. How to build: A configuration object injected at runtime. BollywoodConfig 
+multiplies the scoring weight on distal extremity landmarks (MediaPipe 15-22) by 3.0 and loads 
+a genre-specific phrase database. Edge cases: Misidentified style; allows manual override in 
+the settings menu. Pedagogy: Respects the cultural and technical nuances of diverse art 
+forms. Priority/Effort: P2 / 3 days. 
+13. The Pose Breakdown 
+What it is: Extracts and explains critical moments of a move before practice begins. Why it 
+matters: Provides a cognitive map of the sequence8. How to build: Calculate local maxima of 
+joint velocity (first derivative of displacement). Extract those exact video frames to a hidden 
+Canvas, export as Data URIs, and display in the Phase 0 UI9. Edge cases: Very smooth, slow 
+movements without clear velocity peaks. Handled by falling back to sampling at 25%, 50%, and 
+75% of the chunk duration. Pedagogy: Establishes declarative knowledge before procedural 
+execution. Priority/Effort: P1 / 3 days. 
+14. The Mirror Mode 
+What it is: A skeleton overlay that reverses orientation, acting as a digital mirror. Why it 
+matters: Eliminates the cognitive translation of "their right is my left"38. How to build: CSS 
+transform: scaleX(-1) applied to the video container. Edge cases: Asymmetrical choreography 
+designed specifically for stage right/left. The app provides a toggle to disable mirror mode. 
+Pedagogy: Industry standard spatial learning technique. Priority/Effort: P0 / 1 day. 
+15. The Mistake Highlighter 
+What it is: Visual arrows and glowing lines demonstrating the delta between the user and the 
+reference. Why it matters: Pinpoints exactly how to fix the spatial error. How to build: 
+
+Calculate the vector difference between the user's joint and reference joint. Use 
+ctx.setLineDash() to draw a glowing path from the current position to the target position18. 
+Edge cases: Occlusion. If a limb is hidden behind the body, suppress the highlight to prevent 
+erratic visual artifacts. Pedagogy: Visual augmented feedback. Priority/Effort: P0 / 2 days. 
+6c. What Am I Missing? (5 Advanced Features) 
+1.​ Tactical Silence (Cognitive Load Accumulator) 
+○​ What it does: Intentionally mutes all feedback for a period, letting the user dance 
+uninterrupted. 
+○​ Why it matters: Constant feedback creates dependency. Humans need moments to 
+process and fail safely without judgment1. 
+○​ How to build: Implement a cognitive_load integer. Each verbal cue adds a value. If the 
+accumulator exceeds a threshold, silence all non-critical feedback for 15 seconds, 
+allowing the variable to decay. 
+2.​ Proprioceptive Questioning 
+○​ What it does: Instead of telling the user what they did, it asks them what they felt. 
+○​ Why it matters: Forces the student to internalize the physical sensation of correct 
+technique2. 
+○​ How to build: During the AAR, if the system detects a massive improvement, it pauses 
+and displays a prompt: "You fixed your shoulder alignment. Could you feel the stretch in 
+your back?" 
+3.​ Freeze-Frame Physical Adjustment 
+○​ What it does: The digital equivalent of a teacher physically moving a student's limb. 
+○​ Why it matters: Some errors require absolute static correction before resuming motion. 
+○​ How to build: The video pauses mid-movement upon detecting a severe error. A vector 
+arrow appears on the user's arm. The app refuses to resume playback until the user 
+physically moves their arm into the designated "green zone" on the screen. 
+4.​ Breathing Synchronization Cues 
+○​ What it does: Inserts programmed audio cues ("Inhale," "Exhale") mapped to movement 
+expansion and contraction. 
+○​ Why it matters: Breath control is fundamental to stamina and movement fluidity in 
+dance1. 
+○​ How to build: Metadata timestamps added to the chunk data structure triggering 
+specific, breath-focused SpeechSynthesis utterances. 
+5.​ Asymmetrical Feedback Adaptation 
+○​ What it does: Identifies if a user struggles more with their left or right side and adapts 
+the lesson flow. 
+○​ Why it matters: Everyone has a dominant side. A real teacher drills the weak side heavier. 
+○​ How to build: Accumulate MAE separately for left-side joints vs right-side joints. If the 
+variance exceeds 30%, dynamically insert an extra drill phase focusing solely on the 
+weaker side. 
+
+6d. The Startup Sequence (First 2 Minutes) 
+To establish authority and trust immediately, the first two minutes are heavily orchestrated. 
+●​ 0:00 - 0:15 (Calibration): The user grants camera permissions. The screen displays a 
+glowing silhouette. The synthesized voice speaks calmly: "Hi, I'm your AI dance coach. 
+Let's calibrate." The user is guided to step back until all 33 MediaPipe landmarks turn 
+green, ensuring the tracking volume is secure25. 
+●​ 0:15 - 0:30 (Trust Building): The AI asks the user to raise their right arm. The system 
+validates the movement, drawing a glowing line on the arm, and plays a success chime. 
+The user immediately understands the AI can "see" and evaluate them accurately. 
+●​ 0:30 - 1:00 (Analysis): The user selects a choreography video. The system displays a 
+highly technical progress bar: "Analyzing kinematics... Extracting keyframes... Mapping 
+rhythm." This transparent loading phase establishes the system's analytical depth. 
+●​ 1:00 - 1:30 (Deconstruction): The screen splits. The AI speaks: "I've broken this routine 
+into 4 learnable chunks. Let's look at the first move." Phase 0 initiates, showing the 3 
+extracted keyframes sequentially, demystifying the complex choreography. 
+●​ 1:30 - 2:00 (Execution): "Let's try the arms slowly. Follow my count. 5, 6, 7, 8..." The music 
+plays at 0.5x, the visual ring pulses perfectly on beat, the legs dim, and the user makes 
+their first guided attempt, receiving their first real-time correction. 
+SECTION 7: Implementation Priority 
+1.​ Build Order 
+○​ P0 (Core Infrastructure): Web Worker MediaPipe pipeline, atan2 angle extraction, 
+Canvas 2D skeleton rendering. Without this foundational tracking, the application cannot 
+function24. 
+○​ P1 (Alignment & Scoring): FastDTW implementation to align sequences temporally, 
+followed by the threshold-based scoring logic26. 
+○​ P2 (The Teacher): Web Audio API counting scheduler, SpeechSynthesis cue database, 
+and the Priority Queue algorithm. 
+○​ P3 (UX & Polish): Lesson plan states, UI animations, AAR visual overlays, difficulty scaling. 
+2.​ Quick Wins 
+○​ Audio Counting: Implementing a flawless Web Audio API metronome requires minimal 
+code but adds massive perceived value immediately, grounding the app in authentic 
+dance culture16. 
+○​ Keyframe Extraction: Pulling out local maxima to show static poses requires minimal 
+math (simple array derivative) but makes the pedagogical engine look highly intelligent39. 
+3.​ Hard Problems 
+○​ DTW Alignment at Scale: Running sequence alignment every frame will lock the main 
+thread. Optimizing the sliding window DTW to operate smoothly inside a Web Worker 
+requires deep algorithmic tuning28. 
+○​ Skeleton Overlay Normalization: Accurately mapping a 5'2" user's skeleton onto a 6'2" 
+reference dancer's skeleton requires complex affine transformations and bone-length 
+
+normalization to avoid rendering visual spaghetti. 
+4.​ The Moat 
+○​ The true moat is the Correction Phrase Selection Algorithm combined with Temporal 
+Alignment. Competitors can easily draw static skeletons on a screen using raw 
+MediaPipe. An engine that knows exactly when a user is off-beat versus physically 
+incorrect, manages cognitive load, and speaks an anatomically accurate, encouraging 
+correction in real-time is profoundly difficult to replicate. 
+SECTION 8: Specific Technical Solutions 
+1. The correction timing problem: Speech overlap is prevented by wrapping SpeechSynthesis 
+in a Mutex-style manager class. When speak() is called, it checks 
+window.speechSynthesis.speaking or .pending. If true, the request is dropped. To align 
+corrections with musical phrasing, the manager queues the utterance and fires it exactly 
+500ms before the next downbeat. It uses AudioContext.currentTime to sync the speech 
+execution, ensuring the user hears the cue (e.g., "Left arm up") precisely as they initiate the next 
+musical phrase4. 
+2. The focus-lock problem: 
+When focusing on arms, the leg skeleton must not disappear entirely; it drops to 0.2 opacity 
+(ctx.globalAlpha = 0.2). A disappearing skeleton breaks the user's kinesthetic grounding. During 
+this phase, the leg score is entirely omitted from the mathematical average denominator. The UI 
+dynamically replaces the leg score with a "-" or "N/A" to clearly communicate the omission, 
+ensuring the user isn't penalized for lower body positioning. 
+3. The speed transition problem: The audio metronome operates independently of the 
+HTML5 video player, driven by a scheduleNote() loop checking AudioContext.currentTime 
+against nextNoteTime13. When the playbackRate shifts from 0.5x to 0.75x, the secondsPerBeat 
+variable is dynamically recalculated: secondsPerBeat = (60.0 / nativeBPM) / playbackRate. The 
+user perceives the counting as naturally speeding up proportionally with the music, maintaining 
+flawless synchronization. 
+4. The improvement detection problem: A strict frame-to-frame comparison is highly 
+susceptible to MediaPipe jitter. The architecture employs a Simple Moving Average (SMA) over 
+a 10-frame window (~330ms at 30fps). Improvement is strictly defined as: Current_SMA < 
+(Previous_SMA - 5°) sustained for at least 3 consecutive windows. This smooths out algorithmic 
+noise while introducing only a negligible ~300ms lag, well within the optimal threshold of 
+human perception for positive reinforcement38. 
+5. The phrase variation problem: 
+A static lookup table quickly induces repetitive fatigue. The system utilizes a nested 
+token-replacement template: "{Action} {Target} {Direction}". Where {Action} = ["Push", "Lift", 
+"Raise"], {Target} = ["your left arm", "that left side", "the arm"], and {Direction} = ["higher", "up"]. 
+The manager uses a pseudo-random number generator with a "bag-of-words" shuffle 
+algorithm (drawn without replacement) to guarantee that the same generated variation is 
+never spoken twice in a single session. 
+6. The emotional tone problem: A "nagging" tone results from high pitch, fast rate, and 
+repetitive phrasing. To convey a "coaching" warmth, the SpeechSynthesisUtterance parameters 
+
+are modulated programmatically: the pitch is set to 0.9 (slightly deeper, more grounded), and 
+rate is set to 1.1 (energetic but not rushed)6. When a praise state is triggered, pitch temporarily 
+bumps to 1.1 to simulate genuine excitement. 
+7. The skeleton overlay problem: Directly overlaying highly divergent poses creates confusing 
+visual overlap. The system implements a Dynamic Spatial Threshold. The Euclidean distance 
+between the normalized user root (hip) and reference root is calculated. If the delta 
+ (roughly 15% of the frame width), the direct overlay link is broken26. The system 
+stops rendering the user's limb over the reference limb. Instead, it transitions to a side-by-side 
+view, drawing a translucent "ghost" trail connecting the user's current limb position to the 
+target destination in their own frame, effectively turning an overlapping error into a clear visual 
+path for correction. 
+Works cited 
+1.​ Learner-centered versus teacher-centered dance pedagogy and dance learning 
+and related outcomes: a systematic review - Frontiers, 
+https://www.frontiersin.org/journals/psychology/articles/10.3389/fpsyg.2026.1840
+900/full 
+2.​ Dance Teaching Methods and Cognitive Modeling | PDF | Learning - Scribd, 
+https://www.scribd.com/document/897155557/Order-7 
+3.​ An Adaptive Hybrid Framework for Real-Time Fatigue Assessment in Smart 
+Manufacturing - Semantic Scholar, 
+https://pdfs.semanticscholar.org/945f/61d9d4dadea6bfed2a10e65ba781b95ffa8a.
+pdf 
+4.​ Speech Synthesis API: Browser Support, Voices, Limitations - TestMu AI, 
+https://www.testmuai.com/learning-hub/speech-synthesis-api-browser-support/ 
+5.​ Web Speech API - GitHub Pages, https://webaudio.github.io/web-speech-api/ 
+6.​ JavaScript Text to Speech and Its Many Quirks - Will Boyd / Coder's Block, 
+https://codersblock.com/blog/javascript-text-to-speech-and-its-many-quirks/ 
+7.​ panel.widgets.text_to_speech module — Panel v1.8.10 - HoloViz Panel, 
+https://panel.holoviz.org/api/panel.widgets.text_to_speech.html 
+8.​ Motor Learning for Dance Teachers and Performers - C-I Training, 
+https://www.citraining.com/pdfs/Motor-Learning-for-Dance-Teachers-and-Perfor
+mers.pdf 
+9.​ Key frame extraction algorithm for surveillance videos using an evolutionary 
+approach, https://pmc.ncbi.nlm.nih.gov/articles/PMC11696284/ 
+10.​Key Frame-Based Skeleton Extraction for Lightweight Human Action Recognition 
+Networks, https://informatica.vu.lt/journal/INFORMATICA/article/1394/text 
+11.​React MediaPipe Pose Estimation Demo | PDF | Video | Mobile App - Scribd, 
+https://www.scribd.com/document/921139419/Building-a-React-Pose-Estimation-
+Demo-With-MediaPipe 
+12.​Pose landmark detection guide | Google AI Edge, 
+https://developers.google.com/edge/mediapipe/solutions/vision/pose_landmarker 
+13.​A tale of two clocks | Articles - web.dev, https://web.dev/articles/audio-scheduling 
+
+14.​A Tale of No Clocks, http://joesul.li/van/tale-of-no-clocks/ 
+15.​Understanding The Web Audio Clock, https://sonoport.github.io/ 
+16.​Web Audio Processing: Use Cases and Requirements - W3C, 
+https://www.w3.org/TR/webaudio-usecases/ 
+17.​LibreMetronome is a customizable metronome application built with React and 
+Django. - GitHub, https://github.com/hybridpicker/LibreMetronome 
+18.​Hybrid Skeleton-Based Motion Templates for Cross-View and 
+Appearance-Robust Gait Recognition - PMC, 
+https://pmc.ncbi.nlm.nih.gov/articles/PMC12843325/ 
+19.​(PDF) Hybrid Skeleton-Based Motion Templates for Cross-View and 
+Appearance-Robust Gait Recognition - ResearchGate, 
+https://www.researchgate.net/publication/399548836_Hybrid_Skeleton-Based_M
+otion_Templates_for_Cross-View_and_Appearance-Robust_Gait_Recognition 
+20.​Posture-Detection-Pose-Classification-Project/app.py at main - GitHub, 
+https://github.com/SohamPrajapati/Posture-Detection-Pose-Classification-Projec
+t/blob/main/app.py 
+21.​A Risk Assessment Tool to Identify Incorrect Human Postures - IJIRT, 
+https://ijirt.org/publishedpaper/IJIRT159747_PAPER.pdf 
+22.​Reduced CPU Workload for Human Pose Detection with the Aid of a 
+Low-Resolution Infrared Array Sensor on Embedded Systems - PMC, 
+https://pmc.ncbi.nlm.nih.gov/articles/PMC10708851/ 
+23.​How to improve performance of the app? · vladmandic human · Discussion #318 - 
+GitHub, https://github.com/vladmandic/human/discussions/318 
+24.​How to use a Web worker with Mediapipe Vision - Stack Overflow, 
+https://stackoverflow.com/questions/76222648/how-to-use-a-web-worker-with-
+mediapipe-vision 
+25.​7. Human Pose Estimation — SunFounder AI Fusion Lab Kit documentation, 
+https://docs.sunfounder.com/projects/ai-lab-kit/en/latest/mediapipe/mp_7_pose.h
+tml 
+26.​ViSTAR: Virtual Skill Training with Augmented Reality with 3D Avatars and LLM 
+coaching agent - arXiv, https://arxiv.org/html/2602.22077v2 
+27.​Automated Scoring For Tiktok Dance Challenge | by Shawn Tng - Medium, 
+https://shawntng.medium.com/automated-scoring-for-tiktok-dance-challenge-2
+ba43532ae65 
+28.​Hercules Git Archaeology · Actions · GitHub Marketplace, 
+https://github.com/marketplace/actions/hercules-git-archaeology 
+29.​Different results and performances with different libraries - Stack Overflow, 
+https://stackoverflow.com/questions/52479046/different-results-and-performanc
+es-with-different-libraries 
+30.​How to compute DTW distance more faster in massive data set - Stack Overflow, 
+https://stackoverflow.com/questions/74427433/how-to-compute-dtw-distance-
+more-faster-in-massive-data-set 
+31.​Pedagogical Strategies for Duet Dance Choreography in Higher Education, 
+http://www.issplc.com/upload/pdf/2025/09/8Pedagogical%20Strategies%20for%
+20Duet%20Dance%20Choreography%20in%20Higher%20Education.pdf 
+
+32.​MediaPipe-based extraction of joint ROM and position from patient videos for the 
+functional movement screen: An exploratory study - SOAR@USA, 
+https://soar.usa.edu/cgi/viewcontent.cgi?article=1097&context=phjpt 
+33.​Dance Education Market Research Report 2034 - Dataintelo, 
+https://dataintelo.com/report/dance-education-market 
+34.​Practice and Pedagogy of Indian Classical Dance (ICD): Analysis in Comparison 
+with India's Folk and Bollywood Dances - The Chitrolekha Journal on Art and 
+Design, 
+https://www.chitrolekha.com/V6/n2/02_classical_indian-folk-bollywood_dance.pd
+f 
+35.​Dance | Smith College Academic Catalog, 
+https://catalog.smith.edu/course-descriptions/dan/ 
+36.​Best Ways to Learn Indian Dance - Superprof, 
+https://www.superprof.com.au/blog/bollywood-dance-moves/ 
+37.​What are the best Bollywood dance sequences? - Quora, 
+https://www.quora.com/What-are-the-best-Bollywood-dance-sequences 
+38.​Audio cues enhance mirroring of arm motion when visual cues are scarce, 
+https://royalsocietypublishing.org/rsif/article/16/154/20180903/87063/Audio-cues-
+enhance-mirroring-of-arm-motion-when 
+39.​A Novel Key-Frame Extraction Approach for Semantic Video Processing, 
+https://bit.kuas.edu.tw/2023/vol14/N3/08.JIHMSP-1628%20(1).pdf 
