@@ -84,7 +84,8 @@ export class MusicalityCoach {
       }
     }
 
-    return bestLag;
+    // Negate the lag so that positive lag = user is late, negative lag = user is early
+    return bestLag === 0 ? 0 : -bestLag;
   }
 
   /**
