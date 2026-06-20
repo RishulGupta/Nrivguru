@@ -88,4 +88,44 @@ describe('CorrectionEngine', () => {
     expect(engine.getState('left_wrist')).toBe('FRUSTRATION_AVOIDANCE');
     vi.restoreAllMocks();
   });
+
+  it('should engage Tactical Silence when cognitive load exceeds threshold', () => {
+    const now = Date.now();
+    vi.spyOn(Date, 'now').mockReturnValue(now);
+
+    // Give 3 rapid corrections for different joints
+    engine.analyze([{ name: 'right_wrist', score: 40, diff: 30 }], 'arms');
+    
+    vi.spyOn(Date, 'now').mockReturnValue(now + 100);
+    engine.analyze([{ name: 'left_elbow', score: 40, diff: 30 }], 'arms');
+    
+    vi.spyOn(Date, 'now').mockReturnValue(now + 200);
+    engine.analyze([{ name: 'right_elbow', score: 40, diff: 30 }], 'arms');
+
+    // After 3 cues, cognitive load is 3.0. Silence should be engaged for 15s.
+    // Try to correct another minor error immediately
+    vi.spyOn(Date, 'now').mockReturnValue(now + 300);
+    engine.analyze([{ name: 'right_shoulder', score: 40, diff: 25 }], 'arms');
+    
+    // It should NOT be correcting right_shoulder because it's silenced (and severity is moderate: diff=25)
+    expect(engine.getState('right_shoulder')).toBe('MONITORING');
+
+    vi.restoreAllMocks();
+  });
+
+  it('should trigger Freeze-Frame Physical Adjustment for severe repeated errors', () => {
+    const now = Date.now();
+    vi.spyOn(Date, 'now').mockReturnValue(now);
+
+    engine.analyze([{ name: 'left_hip', score: 40, diff: 50 }], 'legs');
+    expect(engine.getPendingAdjustment()).toBeNull(); // 1st time, no freeze yet
+    
+    vi.spyOn(Date, 'now').mockReturnValue(now + 2100);
+    engine.analyze([{ name: 'left_hip', score: 40, diff: 50 }], 'legs');
+    
+    // 2nd time with a severe error -> Freeze Frame triggered
+    expect(engine.getPendingAdjustment()).toEqual({ jointId: 'left_hip', targetDiff: 20 });
+    
+    vi.restoreAllMocks();
+  });
 });
