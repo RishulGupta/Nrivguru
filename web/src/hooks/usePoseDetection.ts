@@ -10,6 +10,7 @@ interface PoseDetectionState {
   jointScores: JointScore[];
   currentArmScore: number;
   currentLegScore: number;
+  pendingAdjustment: { jointId: string, targetDiff: number } | null;
 }
 
 export function usePoseDetection() {
@@ -19,7 +20,8 @@ export function usePoseDetection() {
     userPose: null,
     jointScores: [],
     currentArmScore: 0,
-    currentLegScore: 0
+    currentLegScore: 0,
+    pendingAdjustment: null
   });
 
   // Track the finish attempt callback
@@ -41,7 +43,8 @@ export function usePoseDetection() {
           userPose: payload.pose || null,
           jointScores: payload.jointScores || [],
           currentArmScore: payload.armScore || 0,
-          currentLegScore: payload.legScore || 0
+          currentLegScore: payload.legScore || 0,
+          pendingAdjustment: payload.pendingAdjustment || null
         }));
       } else if (type === 'ATTEMPT_FINISHED') {
         if (onAttemptFinishedRef.current) {

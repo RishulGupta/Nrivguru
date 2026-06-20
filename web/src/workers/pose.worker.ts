@@ -59,20 +59,30 @@ self.onmessage = async (e: MessageEvent) => {
             // Score the frame
             const { joints: jointScores, armScore, legScore } = scoreFrame(userPose, refFrame.landmarks);
             
-            // Run correction engine to determine what to say
             if (correctionEngine) {
                 correctionEngine.analyze(jointScores, focusArea);
+                
+                self.postMessage({
+                  type: 'FRAME_RESULT',
+                  payload: {
+                    pose: userPose,
+                    jointScores,
+                    armScore,
+                    legScore,
+                    pendingAdjustment: correctionEngine.getPendingAdjustment()
+                  }
+                });
+            } else {
+                self.postMessage({
+                  type: 'FRAME_RESULT',
+                  payload: {
+                    pose: userPose,
+                    jointScores,
+                    armScore,
+                    legScore
+                  }
+                });
             }
-
-            self.postMessage({
-              type: 'FRAME_RESULT',
-              payload: {
-                pose: userPose,
-                jointScores,
-                armScore,
-                legScore
-              }
-            });
           } else {
              self.postMessage({
               type: 'FRAME_RESULT',

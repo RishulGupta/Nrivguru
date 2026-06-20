@@ -53,6 +53,7 @@ export default function Practice() {
     jointScores, 
     currentArmScore, 
     currentLegScore,
+    pendingAdjustment,
     loadReference,
     processFrame,
     finishAttempt 
@@ -63,9 +64,12 @@ export default function Practice() {
   const [referencePoses, setReferencePoses] = useState<PoseFrame[]>([]);
   const [keyframes, setKeyframes] = useState<PoseFrame[]>([]);
 
-  // Phase 3 Modules
+  // Phase 3 & 4 Modules
   const difficultyScaler = useRef(new DifficultyScaler()).current;
   const teacherPersonality = useRef(new TeacherPersonality()).current;
+  const [proprioQuestion, setProprioQuestion] = useState<string | null>(null);
+  
+  const lastBreathingCueIndex = useRef(-1);
 
   // Load session memory & style
   useEffect(() => {
@@ -175,7 +179,7 @@ export default function Practice() {
     
     v.currentTime = startMs / 1000;
     
-    if (phase !== 'teach' && phase !== 'idle' && !attemptComplete) {
+    if (phase !== 'teach' && phase !== 'idle' && !attemptComplete && !pendingAdjustment) {
        v.play().catch(e => console.warn("Auto-play prevented", e));
        countingSystem.start(endMs - startMs, effectivePlaybackRate);
     } else {
@@ -184,8 +188,22 @@ export default function Practice() {
     }
     
     const onTimeUpdate = () => {
-      if (v.currentTime * 1000 >= endMs) {
-         // Reached end of chunk
+       const currentMs = v.currentTime * 1000;
+       
+       // Phase 4: Breathing Cues
+       if (chunk.breathing_cues && !speechManager.isSpeaking && phase === 'full') {
+         const nextCueIdx = lastBreathingCueIndex.current + 1;
+         if (nextCueIdx < chunk.breathing_cues.length) {
+            const cue = chunk.breathing_cues[nextCueIdx];
+            if (currentMs >= cue.timestamp_ms - 200) { // Trigger slightly before
+               speechManager.speak(cue.type, 'urgent'); // "inhale" or "exhale"
+               lastBreathingCueIndex.current = nextCueIdx;
+            }
+         }
+       }
+
+       if (currentMs >= endMs) {
+          // Reached end of chunk
          v.pause();
          countingSystem.stop();
          
@@ -212,7 +230,8 @@ export default function Practice() {
       const v = refVideoRef.current;
       const w = webcamRef.current;
       
-      if (v && w && !v.paused && phase !== 'watch' && phase !== 'teach') {
+      // If pendingAdjustment, we continue to process frames even though v is paused!
+      if (v && w && (!v.paused || pendingAdjustment) && phase !== 'watch' && phase !== 'teach') {
         // We only process if video is playing and we are in a scored phase
         // The worker expects the timestamp of the reference video to align the poses
         processFrame(w, v.currentTime * 1000, focusArea as FocusArea);
@@ -235,6 +254,16 @@ export default function Practice() {
      
      // Adapt Difficulty
      difficultyScaler.evaluateAttempt(score.overallScore);
+     
+     // Proprioceptive Questioning (Phase 4)
+     if (session?.user?.id && id) {
+       const improvement = await sessionMemory.getOverallImprovement(id, score.overallScore);
+       if (improvement && improvement > 15) {
+          setProprioQuestion(`Massive improvement! You scored ${Math.round(improvement)}% higher. Could you feel the difference in your alignment?`);
+       } else {
+          setProprioQuestion(null);
+       }
+     }
      
      // Musicality Coach (Phase 3)
      // To be implemented using Web Worker pose history
@@ -273,12 +302,15 @@ export default function Practice() {
   const handleNextPhase = () => {
      setAttemptComplete(false);
      setFinalScore(null);
+     setProprioQuestion(null);
      sendSessionEvent({ type: 'PHASE_COMPLETE' });
   };
   
   const handleRetry = () => {
      setAttemptComplete(false);
      setFinalScore(null);
+     setProprioQuestion(null);
+     lastBreathingCueIndex.current = -1;
      sendSessionEvent({ type: 'RESTART_CHUNK' });
   };
 
@@ -347,7 +379,7 @@ export default function Practice() {
                  landmarks={userPose} 
                  refLandmarks={currentRefPose}
                  focusArea={phase as any}
-                 showArrows={phase === 'arms' || phase === 'legs' || phase === 'combine' || phase === 'full'}
+                 showArrows={phase === 'arms' || phase === 'legs' || phase === 'combine' || phase === 'full' || !!pendingAdjustment}
                  width={640} 
                  height={480} 
                  jointScores={jointScores.length > 0 ? Object.fromEntries(jointScores.map(j => [j.name, j.score])) as any : undefined} 
@@ -355,7 +387,17 @@ export default function Practice() {
             )}
           </div>
 
-          <BeatIndicator isPlaying={phase !== 'teach' && phase !== 'idle' && !attemptComplete} playbackRate={playbackRate} />
+          {/* Physical Adjustment Overlay */}
+          {pendingAdjustment && (
+            <div className="absolute inset-x-0 top-1/4 flex justify-center z-40 pointer-events-none">
+               <div className="bg-red-500/20 border border-red-500/50 backdrop-blur-md px-6 py-4 rounded-2xl animate-pulse text-center">
+                  <h3 className="text-red-500 font-bold text-lg mb-1">Freeze!</h3>
+                  <p className="text-white text-sm">Move your <b>{pendingAdjustment.jointId.replace('_', ' ')}</b> into the green zone.</p>
+               </div>
+            </div>
+          )}
+
+          <BeatIndicator isPlaying={phase !== 'teach' && phase !== 'idle' && !attemptComplete && !pendingAdjustment} playbackRate={playbackRate} />
 
           {/* Real-time Score Display */}
           {(phase === 'arms' || phase === 'legs' || phase === 'combine' || phase === 'full') && !attemptComplete && (
@@ -385,6 +427,17 @@ export default function Practice() {
               <div className="bg-white/5 p-3 rounded-lg"><p className="text-muted-foreground">Legs</p><p className="text-white font-bold">{Math.round(finalScore.legScore)}%</p></div>
               <div className="bg-white/5 p-3 rounded-lg"><p className="text-muted-foreground">Timing</p><p className="text-white font-bold">{Math.round(finalScore.timingScore)}%</p></div>
             </div>
+
+            {/* Proprioceptive Questioning */}
+            {proprioQuestion && (
+              <div className="bg-primary/20 border border-primary/40 rounded-xl p-4 mt-4 animate-in fade-in slide-in-from-bottom-4">
+                <p className="text-white font-medium text-sm">{proprioQuestion}</p>
+                <div className="flex gap-2 mt-3">
+                  <button onClick={() => setProprioQuestion(null)} className="flex-1 bg-white/10 hover:bg-white/20 text-white text-xs py-2 rounded-lg transition-colors">No, it felt the same</button>
+                  <button onClick={() => setProprioQuestion(null)} className="flex-1 bg-primary/80 hover:bg-primary text-white text-xs py-2 rounded-lg transition-colors">Yes, I felt it!</button>
+                </div>
+              </div>
+            )}
 
             <div className="flex gap-3 pt-6">
               <button onClick={handleRetry} className="flex-1 bg-white/10 hover:bg-white/20 text-white font-semibold py-3 rounded-xl transition-all">

@@ -15,6 +15,7 @@ import Credits from './pages/Credits';
 import History from './pages/History';
 import InstructorPortal from './pages/InstructorPortal';
 import Settings from './pages/Settings';
+import WarmUp from './pages/WarmUp';
 
 // Route Guards
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
@@ -145,6 +146,12 @@ function App() {
         <Route path="/routine/:id" element={
           <ProtectedRoute>
             <RoutineDetail />
+          </ProtectedRoute>
+        } />
+
+        <Route path="/warmup/:id/:chunkId" element={
+          <ProtectedRoute>
+            <WarmUp />
           </ProtectedRoute>
         } />
 

@@ -42,6 +42,16 @@ export class CorrectionEngine {
   private readonly MAX_CORRECTIONS_PER_WINDOW = 3;
   private readonly COOLDOWN_MS = 2000;
 
+  // Tactical Silence
+  private cognitiveLoad = 0;
+  private lastLoadDecayTime = 0;
+  private silenceEndTime = 0;
+  private readonly COGNITIVE_LOAD_THRESHOLD = 3.0;
+  private readonly SILENCE_DURATION_MS = 15000;
+
+  // Freeze-Frame Physical Adjustment
+  private pendingAdjustment: { jointId: JointId, targetDiff: number } | null = null;
+
   constructor() {
     const joints: JointId[] = [
       'left_shoulder', 'right_shoulder', 'left_elbow', 'right_elbow',
@@ -79,6 +89,16 @@ export class CorrectionEngine {
     }
 
     this.updateSMA(currentScores);
+    
+    // Decay cognitive load
+    if (now - this.lastLoadDecayTime > 1000) {
+      // Decay 0.5 per second
+      this.cognitiveLoad = Math.max(0, this.cognitiveLoad - 0.5);
+      this.lastLoadDecayTime = now;
+    }
+
+    // Check if we are in tactical silence
+    const isSilenced = now < this.silenceEndTime;
 
     // 1. Filter and weight scores
     const weightedScores: WeightedScore[] = currentScores
@@ -138,10 +158,17 @@ export class CorrectionEngine {
       // Ensure cooldown
       if (now - ctx.lastCorrectionTime > this.COOLDOWN_MS) {
         if (this.correctionCountInWindow < this.MAX_CORRECTIONS_PER_WINDOW) {
-          this.executeCorrection(worst);
+          // If silenced, only allow severe (urgent) corrections
+          if (!isSilenced || worst.severity === 'severe') {
+            this.executeCorrection(worst);
+          }
         }
       }
     }
+  }
+
+  public getPendingAdjustment() {
+    return this.pendingAdjustment;
   }
 
   private executeCorrection(worst: WeightedScore) {
@@ -159,10 +186,24 @@ export class CorrectionEngine {
       speechManager.speak(phrase, priority);
       this.correctionCountInWindow++;
       
+      // Tactical silence logic
+      this.cognitiveLoad += 1.0;
+      if (this.cognitiveLoad >= this.COGNITIVE_LOAD_THRESHOLD) {
+        this.silenceEndTime = Date.now() + this.SILENCE_DURATION_MS;
+        this.cognitiveLoad = 0; // reset
+        console.log("Tactical Silence Engaged! Muting for 15s");
+      }
+      
       ctx.state = 'CORRECTING';
       ctx.lastCorrectionTime = Date.now();
       ctx.recentlyCorrected = true;
       ctx.failedCorrections++;
+
+      // Trigger Physical Adjustment if severe and we failed a few times (or immediately if very bad)
+      if (worst.severity === 'severe' && ctx.failedCorrections >= 2) {
+        this.pendingAdjustment = { jointId: worst.jointId, targetDiff: 20 }; // Must get error under 20
+        speechManager.speak("Freeze! Move your " + worst.jointId.replace('_', ' ') + " into the green zone to continue.", 'urgent');
+      }
 
       if (ctx.failedCorrections >= 3) {
         ctx.state = 'FRUSTRATION_AVOIDANCE';
@@ -176,6 +217,10 @@ export class CorrectionEngine {
   }
 
   private triggerPraise(jointId: JointId) {
+    if (this.pendingAdjustment?.jointId === jointId) {
+       this.pendingAdjustment = null;
+    }
+    
     const phrase = this.phraseGen.getUniquePhrase(jointId, 'mild', 'praiseWhenFixed');
     if (phrase) {
       speechManager.speak(phrase, 'praise');
@@ -207,6 +252,17 @@ export class CorrectionEngine {
   }
 
   private checkImprovement(): JointId | null {
+    // If we are waiting for an adjustment, check if it's fixed directly (live)
+    if (this.pendingAdjustment) {
+      const history = this.smaHistory.get(this.pendingAdjustment.jointId)!;
+      if (history.length > 0) {
+         const current = history[history.length - 1];
+         if (current <= this.pendingAdjustment.targetDiff) {
+            return this.pendingAdjustment.jointId;
+         }
+      }
+    }
+
     // Current SMA < (Previous SMA - 5) for 3 consecutive windows.
     // For simplicity in this implementation, we check if the current average of the last 3 frames 
     // is 5 degrees better than the average of the older 7 frames, 

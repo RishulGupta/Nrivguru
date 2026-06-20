@@ -19,9 +19,10 @@ export interface Chunk {
   chunk_index: number;
   start_time_ms: number;
   end_time_ms: number;
-  clip_url: string;
-  pose_slice_json?: any;
+  clip_url?: string;
   description?: string;
+  pose_slice_json?: string | any[];
+  breathing_cues?: { timestamp_ms: number; type: 'inhale' | 'exhale' }[];
   created_at: string;
 }
 
