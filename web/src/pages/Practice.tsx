@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { ArrowLeft, Loader2, Camera } from 'lucide-react';
 import SkeletonCanvas from '../components/SkeletonCanvas';
@@ -55,9 +55,12 @@ export default function Practice() {
     currentArmScore, 
     currentLegScore,
     pendingAdjustment,
+    lowVisibility,
+    userStopped,
     loadReference,
     processFrame,
-    finishAttempt 
+    finishAttempt,
+    clearUserStopped
   } = usePoseDetection();
 
   const [finalScore, setFinalScore] = useState<FinalScore | null>(null);
@@ -71,6 +74,9 @@ export default function Practice() {
   const [proprioQuestion, setProprioQuestion] = useState<string | null>(null);
   
   const lastBreathingCueIndex = useRef(-1);
+
+  const consecutiveGreenFrames = useRef(0);
+  const lastChimeTime = useRef(0);
 
   // Load session memory & style
   useEffect(() => {
@@ -254,6 +260,32 @@ export default function Practice() {
     return () => cancelAnimationFrame(animationId);
   }, [isWorkerReady, hasWebcam, phase, focusArea, processFrame]);
 
+  // Green score chime
+  useEffect(() => {
+    if (currentArmScore > 85 && currentLegScore > 85 && phase !== 'teach' && phase !== 'idle' && phase !== 'watch') {
+      consecutiveGreenFrames.current++;
+      if (consecutiveGreenFrames.current >= 4 && Date.now() - lastChimeTime.current > 5000) {
+        try {
+          const ctx = new AudioContext();
+          const osc = ctx.createOscillator();
+          const gain = ctx.createGain();
+          osc.connect(gain);
+          gain.connect(ctx.destination);
+          osc.frequency.value = 880;
+          osc.type = 'sine';
+          gain.gain.setValueAtTime(0.15, ctx.currentTime);
+          gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.3);
+          osc.start(ctx.currentTime);
+          osc.stop(ctx.currentTime + 0.3);
+          lastChimeTime.current = Date.now();
+          consecutiveGreenFrames.current = 0;
+        } catch { /* ignore */ }
+      }
+    } else {
+      consecutiveGreenFrames.current = 0;
+    }
+  }, [currentArmScore, currentLegScore, phase]);
+
   const handleScoredAttemptFinished = async () => {
      setAttemptComplete(true);
      const score = await finishAttempt();
@@ -273,8 +305,15 @@ export default function Practice() {
      }
      
      // Musicality Coach (Phase 3)
-     // To be implemented using Web Worker pose history
-     
+     if (score.timingFeedback) {
+       speechManager.speak(score.timingFeedback, 'normal');
+     }
+
+     // Asymmetrical Feedback Adaptation (Feature 6)
+     if (score.weakerSide) {
+       speechManager.speak(`Your ${score.weakerSide} side needs more work. Let's focus there next time.`, 'normal');
+     }
+      
      // Provide verbal feedback
      if (score.overallScore > 85) {
        speechManager.speak("Excellent run! That was really accurate.", "praise");
@@ -310,7 +349,13 @@ export default function Practice() {
      setAttemptComplete(false);
      setFinalScore(null);
      setProprioQuestion(null);
-     sendSessionEvent({ type: 'PHASE_COMPLETE' });
+     // Dynamic bypass: if score > 85% in combine phase, skip directly to full speed
+     if (phase === 'combine' && finalScore && finalScore.overallScore > 85) {
+       speechManager.speak("Excellent! You've nailed this. Let's go full speed.", 'praise');
+       sendSessionEvent({ type: 'SKIP_TO_FULL' });
+     } else {
+       sendSessionEvent({ type: 'PHASE_COMPLETE' });
+     }
   };
   
   const handleRetry = () => {
@@ -320,6 +365,12 @@ export default function Practice() {
      lastBreathingCueIndex.current = -1;
      sendSessionEvent({ type: 'RESTART_CHUNK' });
   };
+
+  const handleSlowDown = useCallback(() => {
+    difficultyScaler.forceSlowDown();
+    clearUserStopped();
+    sendSessionEvent({ type: 'RESTART_CHUNK' });
+  }, [difficultyScaler, sendSessionEvent, clearUserStopped]);
 
   if (loadingData || !isWorkerReady) {
     return (
@@ -383,6 +434,26 @@ export default function Practice() {
             <div className="absolute inset-0 flex flex-col items-center justify-center z-20 bg-black">
               <Camera className="w-16 h-16 text-destructive mb-4" />
               <p className="text-white font-semibold">{webcamError || 'Waiting for camera...'}</p>
+            </div>
+          )}
+
+          {lowVisibility && (
+            <div className="absolute inset-x-0 top-1/3 flex justify-center z-30 pointer-events-none">
+              <div className="bg-yellow-500/20 border border-yellow-500/50 backdrop-blur-md px-6 py-4 rounded-2xl animate-pulse text-center">
+                <p className="text-yellow-400 font-semibold">Step back — I can&apos;t see your full body!</p>
+              </div>
+            </div>
+          )}
+
+          {userStopped && !attemptComplete && (
+            <div className="absolute inset-x-0 top-1/3 flex justify-center z-35">
+              <div className="bg-blue-500/20 border border-blue-500/50 backdrop-blur-md px-6 py-4 rounded-2xl text-center space-y-3">
+                <p className="text-blue-400 font-semibold">You&apos;ve stopped moving. Slow it down?</p>
+                <div className="flex gap-3">
+                  <button onClick={handleSlowDown} className="bg-blue-500/80 hover:bg-blue-500 text-white text-sm font-semibold px-4 py-2 rounded-xl transition-colors">Slow it down</button>
+                  <button onClick={clearUserStopped} className="bg-white/10 hover:bg-white/20 text-white text-sm font-semibold px-4 py-2 rounded-xl transition-colors">Continue</button>
+                </div>
+              </div>
             </div>
           )}
           <video ref={webcamRef} className="w-full h-full object-cover scale-x-[-1]" playsInline muted />

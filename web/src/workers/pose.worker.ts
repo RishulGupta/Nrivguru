@@ -1,10 +1,12 @@
 import { FilesetResolver, PoseLandmarker } from '@mediapipe/tasks-vision';
 import { scoreFrame } from '@taal/shared/utils/scoring';
 import { CorrectionEngine } from '@taal/shared/utils/CorrectionEngine';
+import { MusicalityCoach } from '@taal/shared/utils/MusicalityCoach';
 import { scoreSequence } from '@taal/shared/utils/scoring';
 import type { PoseFrame } from '@taal/shared/types/pose';
 let poseLandmarker: PoseLandmarker | null = null;
 let correctionEngine: CorrectionEngine | null = null;
+const musicalityCoach = new MusicalityCoach();
 
 // Reference sequence loaded per chunk
 let referencePoses: PoseFrame[] = [];
@@ -12,6 +14,11 @@ let accumulatedUserFrames: PoseFrame[] = [];
 
 // Track timing internally
 let lastWorkerTimestamp = 0;
+
+let lastUserLandmarks: any = null;
+let lowVelocityFrameCount = 0;
+const LOW_VELOCITY_THRESHOLD = 0.005;
+const LOW_VELOCITY_FRAME_COUNT = 30;
 
 self.onmessage = async (e: MessageEvent) => {
   const { type, payload } = e.data;
@@ -54,6 +61,13 @@ self.onmessage = async (e: MessageEvent) => {
         if (poseLandmarker) {
           const result = poseLandmarker.detectForVideo(bitmap, lastWorkerTimestamp);
           if (result.landmarks && result.landmarks.length > 0) {
+            const keyLandmarks = [0, 11, 12, 23, 24];
+            const avgVisibility = keyLandmarks.reduce((sum, idx) => sum + (result.landmarks[0][idx]?.visibility || 0), 0) / keyLandmarks.length;
+            if (avgVisibility < 0.5) {
+              self.postMessage({ type: 'LOW_VISIBILITY' });
+              bitmap.close();
+              return;
+            }
             resultLandmarks = result.landmarks[0];
           }
         } else {
@@ -71,6 +85,28 @@ self.onmessage = async (e: MessageEvent) => {
         }
 
         bitmap.close(); // free memory
+
+        if (resultLandmarks && lastUserLandmarks) {
+          let totalDisplacement = 0;
+          for (let i = 0; i < Math.min(resultLandmarks.length, lastUserLandmarks.length, 33); i++) {
+            const dx = resultLandmarks[i].x - lastUserLandmarks[i].x;
+            const dy = resultLandmarks[i].y - lastUserLandmarks[i].y;
+            totalDisplacement += Math.sqrt(dx * dx + dy * dy);
+          }
+          const avgDisplacement = totalDisplacement / 33;
+          if (avgDisplacement < LOW_VELOCITY_THRESHOLD) {
+            lowVelocityFrameCount++;
+            if (lowVelocityFrameCount >= LOW_VELOCITY_FRAME_COUNT) {
+              self.postMessage({ type: 'USER_STOPPED' });
+              lowVelocityFrameCount = 0;
+            }
+          } else {
+            lowVelocityFrameCount = 0;
+          }
+        }
+        if (resultLandmarks) {
+          lastUserLandmarks = JSON.parse(JSON.stringify(resultLandmarks));
+        }
 
         if (resultLandmarks) {
           const userPose = resultLandmarks;
@@ -134,15 +170,24 @@ self.onmessage = async (e: MessageEvent) => {
       if (referencePoses.length > 0 && accumulatedUserFrames.length > 0) {
         // Sample down to max 300 frames to keep DTW fast if it was a very long chunk
         const finalScore = scoreSequence(accumulatedUserFrames, referencePoses);
-        
+
+        // Musicality Coach: cross-correlate velocity profiles
+        const refVel = musicalityCoach.extractVelocityProfile(referencePoses);
+        const userVel = musicalityCoach.extractVelocityProfile(accumulatedUserFrames);
+        const frameLag = musicalityCoach.crossCorrelate(refVel, userVel);
+        const timingFeedback = frameLag !== null ? musicalityCoach.getTimingFeedback(frameLag) : null;
+
+        // Asymmetrical Feedback: detect weaker side
+        const weakerSide = correctionEngine?.getWeakerSide() || null;
+
         self.postMessage({
             type: 'ATTEMPT_FINISHED',
-            payload: { finalScore }
+            payload: { finalScore: { ...finalScore, timingFeedback, weakerSide } }
         });
       } else {
         self.postMessage({
             type: 'ATTEMPT_FINISHED',
-            payload: { finalScore: { armScore: 0, legScore: 0, timingScore: 0, overallScore: 0 } }
+            payload: { finalScore: { armScore: 0, legScore: 0, timingScore: 0, overallScore: 0, timingFeedback: null, weakerSide: null } }
         });
       }
       accumulatedUserFrames = [];

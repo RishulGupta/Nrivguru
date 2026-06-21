@@ -11,6 +11,8 @@ interface PoseDetectionState {
   currentArmScore: number;
   currentLegScore: number;
   pendingAdjustment: { jointId: string, targetDiff: number } | null;
+  lowVisibility: boolean;
+  userStopped: boolean;
 }
 
 let globalWorker: Worker | null = null;
@@ -23,7 +25,9 @@ export function usePoseDetection() {
     jointScores: [],
     currentArmScore: 0,
     currentLegScore: 0,
-    pendingAdjustment: null
+    pendingAdjustment: null,
+    lowVisibility: false,
+    userStopped: false
   });
 
   // Track the finish attempt callback
@@ -52,13 +56,18 @@ export function usePoseDetection() {
           jointScores: payload.jointScores || [],
           currentArmScore: payload.armScore || 0,
           currentLegScore: payload.legScore || 0,
-          pendingAdjustment: payload.pendingAdjustment || null
+          pendingAdjustment: payload.pendingAdjustment || null,
+          lowVisibility: false
         }));
       } else if (type === 'ATTEMPT_FINISHED') {
         if (onAttemptFinishedRef.current) {
           onAttemptFinishedRef.current(payload.finalScore);
           onAttemptFinishedRef.current = null;
         }
+      } else if (type === 'LOW_VISIBILITY') {
+        setState(s => ({ ...s, lowVisibility: true }));
+      } else if (type === 'USER_STOPPED') {
+        setState(s => ({ ...s, userStopped: true }));
       }
     };
 
@@ -105,10 +114,15 @@ export function usePoseDetection() {
     });
   }, []);
 
+  const clearUserStopped = useCallback(() => {
+    setState(s => ({ ...s, userStopped: false }));
+  }, []);
+
   return {
     ...state,
     loadReference,
     processFrame,
-    finishAttempt
+    finishAttempt,
+    clearUserStopped
   };
 }

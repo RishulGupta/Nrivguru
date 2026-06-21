@@ -52,6 +52,10 @@ export class CorrectionEngine {
   // Freeze-Frame Physical Adjustment
   private pendingAdjustment: { jointId: JointId, targetDiff: number } | null = null;
 
+  // Asymmetrical Feedback Adaptation
+  private leftSideErrors: number[] = [];
+  private rightSideErrors: number[] = [];
+
   constructor() {
     const joints: JointId[] = [
       'left_shoulder', 'right_shoulder', 'left_elbow', 'right_elbow',
@@ -89,6 +93,14 @@ export class CorrectionEngine {
     }
 
     this.updateSMA(currentScores);
+
+    // Asymmetrical error tracking
+    for (const score of currentScores) {
+      if (score.name.startsWith('left_')) this.leftSideErrors.push(score.diff);
+      else if (score.name.startsWith('right_')) this.rightSideErrors.push(score.diff);
+    }
+    if (this.leftSideErrors.length > 100) this.leftSideErrors = this.leftSideErrors.slice(-100);
+    if (this.rightSideErrors.length > 100) this.rightSideErrors = this.rightSideErrors.slice(-100);
     
     // Decay cognitive load
     if (now - this.lastLoadDecayTime > 1000) {
@@ -169,6 +181,17 @@ export class CorrectionEngine {
 
   public getPendingAdjustment() {
     return this.pendingAdjustment;
+  }
+
+  public getWeakerSide(): 'left' | 'right' | null {
+    if (this.leftSideErrors.length < 20 || this.rightSideErrors.length < 20) return null;
+    const leftAvg = this.leftSideErrors.reduce((a, b) => a + b, 0) / this.leftSideErrors.length;
+    const rightAvg = this.rightSideErrors.reduce((a, b) => a + b, 0) / this.rightSideErrors.length;
+    const variance = Math.abs(leftAvg - rightAvg) / Math.max(leftAvg, rightAvg);
+    if (variance > 0.3) {
+      return leftAvg > rightAvg ? 'left' : 'right';
+    }
+    return null;
   }
 
   private executeCorrection(worst: WeightedScore) {

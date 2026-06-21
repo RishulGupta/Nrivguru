@@ -14,6 +14,7 @@ export const lessonMachine = setup({
       | { type: 'PREV_PHASE' }
       | { type: 'TOGGLE_SEATED' }
       | { type: 'RESTART_CHUNK' }
+      | { type: 'SKIP_TO_FULL' }
   },
   actions: {
     incrementAttempt: ({ context }) => {
@@ -56,6 +57,10 @@ export const lessonMachine = setup({
           target: 'arms',
           actions: 'incrementAttempt'
         },
+        SKIP_TO_FULL: {
+          target: 'full',
+          actions: 'incrementAttempt'
+        },
         PREV_PHASE: 'teach'
       }
     },
@@ -89,6 +94,10 @@ export const lessonMachine = setup({
       // Phase 4: Full body focus, 0.75x speed
       on: {
         PHASE_COMPLETE: {
+          target: 'full',
+          actions: 'incrementAttempt'
+        },
+        SKIP_TO_FULL: {
           target: 'full',
           actions: 'incrementAttempt'
         },

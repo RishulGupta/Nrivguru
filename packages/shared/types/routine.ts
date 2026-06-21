@@ -32,6 +32,8 @@ export interface FinalScore {
   legScore: number;
   timingScore: number;
   overallScore: number;
+  timingFeedback?: string | null;
+  weakerSide?: 'left' | 'right' | null;
 }
 
 export interface JointScore {

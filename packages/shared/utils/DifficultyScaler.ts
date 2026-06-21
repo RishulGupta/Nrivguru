@@ -60,6 +60,10 @@ export class DifficultyScaler {
     this.currentRate = Math.min(this.maxRate, Math.max(this.minRate, rate));
   }
 
+  public forceSlowDown() {
+    this.currentRate = Math.max(this.minRate, this.currentRate - 0.25);
+  }
+
   public reset() {
     this.currentRate = this.baseRate;
     this.currentThreshold = 25;
