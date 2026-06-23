@@ -84,8 +84,6 @@ export class CorrectionEngine {
   }
 
   public analyze(currentScores: JointScore[], focusArea: FocusArea) {
-    if (speechManager.isSpeaking) return;
-
     const now = Date.now();
     if (now - this.windowStartTime > this.WINDOW_DURATION_MS) {
       this.windowStartTime = now;
@@ -183,6 +181,13 @@ export class CorrectionEngine {
     return this.pendingAdjustment;
   }
 
+  public isFrustrated(): boolean {
+    for (const ctx of this.stateMachine.values()) {
+      if (ctx.state === 'FRUSTRATION_AVOIDANCE') return true;
+    }
+    return false;
+  }
+
   public getWeakerSide(): 'left' | 'right' | null {
     if (this.leftSideErrors.length < 20 || this.rightSideErrors.length < 20) return null;
     const leftAvg = this.leftSideErrors.reduce((a, b) => a + b, 0) / this.leftSideErrors.length;
@@ -196,7 +201,7 @@ export class CorrectionEngine {
 
   private executeCorrection(worst: WeightedScore) {
     const ctx = this.stateMachine.get(worst.jointId)!;
-    
+
     // State machine logic
     if (ctx.state === 'MONITORING' || ctx.state === 'VERIFYING_FIX') {
       ctx.state = 'DETECTED_ERROR';
@@ -204,38 +209,38 @@ export class CorrectionEngine {
 
     const priority = worst.severity === 'severe' ? 'urgent' : 'normal';
     const phrase = this.phraseGen.getUniquePhrase(worst.jointId, worst.severity, 'midMovement');
-    
-    if (phrase) {
+
+    if (phrase && !speechManager.isSpeaking) {
       speechManager.speak(phrase, priority);
-      this.correctionCountInWindow++;
-      
-      // Tactical silence logic
-      this.cognitiveLoad += 1.0;
-      if (this.cognitiveLoad >= this.COGNITIVE_LOAD_THRESHOLD) {
-        this.silenceEndTime = Date.now() + this.SILENCE_DURATION_MS;
-        this.cognitiveLoad = 0; // reset
-        console.log("Tactical Silence Engaged! Muting for 15s");
-      }
-      
-      ctx.state = 'CORRECTING';
-      ctx.lastCorrectionTime = Date.now();
-      ctx.recentlyCorrected = true;
-      ctx.failedCorrections++;
+    }
 
-      // Trigger Physical Adjustment if severe and we failed a few times (or immediately if very bad)
-      if (worst.severity === 'severe' && ctx.failedCorrections >= 2) {
-        this.pendingAdjustment = { jointId: worst.jointId, targetDiff: 20 }; // Must get error under 20
-        speechManager.speak("Freeze! Move your " + worst.jointId.replace('_', ' ') + " into the green zone to continue.", 'urgent');
-      }
+    this.correctionCountInWindow++;
 
-      if (ctx.failedCorrections >= 3) {
-        ctx.state = 'FRUSTRATION_AVOIDANCE';
-      }
-      
-      // Clear recentlyCorrected flag from others
-      for (const [id, state] of this.stateMachine.entries()) {
-        if (id !== worst.jointId) state.recentlyCorrected = false;
-      }
+    // Tactical silence logic
+    this.cognitiveLoad += 1.0;
+    if (this.cognitiveLoad >= this.COGNITIVE_LOAD_THRESHOLD) {
+      this.silenceEndTime = Date.now() + this.SILENCE_DURATION_MS;
+      this.cognitiveLoad = 0; // reset
+    }
+
+    ctx.state = 'CORRECTING';
+    ctx.lastCorrectionTime = Date.now();
+    ctx.recentlyCorrected = true;
+    ctx.failedCorrections++;
+
+    // Trigger Physical Adjustment if severe and we failed a few times
+    if (worst.severity === 'severe' && ctx.failedCorrections >= 2 && this.pendingAdjustment === null) {
+      this.pendingAdjustment = { jointId: worst.jointId, targetDiff: 20 };
+      speechManager.speak("Freeze! Move your " + worst.jointId.replace('_', ' ') + " into the green zone to continue.", 'urgent');
+    }
+
+    if (ctx.failedCorrections >= 3) {
+      ctx.state = 'FRUSTRATION_AVOIDANCE';
+    }
+
+    // Clear recentlyCorrected flag from others
+    for (const [id, state] of this.stateMachine.entries()) {
+      if (id !== worst.jointId) state.recentlyCorrected = false;
     }
   }
 
