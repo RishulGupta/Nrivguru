@@ -269,29 +269,46 @@ export default function WarmUp() {
   const repsRef = useRef(0);
   const streamRef = useRef<MediaStream | null>(null);
 
-  // ── Camera init ──
+  // ── Camera init with timeout ──
   useEffect(() => {
+    let cancelled = false;
+    const timeout = setTimeout(() => {
+      if (!cancelled && !hasWebcam) {
+        setWebcamError('Camera timed out. Check camera is not in use by another app.');
+      }
+    }, 10000);
+
     async function init() {
       try {
         const stream = await navigator.mediaDevices.getUserMedia({
           video: { width: 640, height: 480, facingMode: 'user' },
         });
+        if (cancelled) { stream.getTracks().forEach(t => t.stop()); return; }
         streamRef.current = stream;
+        clearTimeout(timeout);
         const v = videoRef.current;
         if (v) {
           v.srcObject = stream;
-          await v.play();
-          setHasWebcam(true);
+          // Play may reject if browser needs user gesture; muted helps
+          try { await v.play(); } catch (playErr) {
+            console.warn('WarmUp: video play() needed user gesture', playErr);
+            // Still usable — detectForVideo works with or without play()
+          }
+          if (!cancelled) setHasWebcam(true);
         }
-      } catch (e) {
-        console.error('Camera access required for warm-up tracking.', e);
-        setWebcamError('Camera access denied. Please allow camera permissions.');
+      } catch (e: any) {
+        clearTimeout(timeout);
+        const msg = e?.name === 'NotAllowedError'
+          ? 'Camera permission denied. Please allow camera access in browser settings.'
+          : e?.name === 'NotFoundError'
+            ? 'No camera found. Connect a webcam.'
+            : `Camera error: ${e?.message || 'unknown'}`;
+        console.error('WarmUp: camera init failed', e);
+        if (!cancelled) setWebcamError(msg);
       }
     }
     init();
-    return () => {
-      if (streamRef.current) streamRef.current.getTracks().forEach(t => t.stop());
-    };
+    return () => { cancelled = true; clearTimeout(timeout); if (streamRef.current) streamRef.current.getTracks().forEach(t => t.stop()); };
   }, []);
 
   // ── Model init with GPU→CPU fallback ──
@@ -314,9 +331,9 @@ export default function WarmUp() {
             },
             runningMode: 'VIDEO',
             numPoses: 1,
-            minPoseDetectionConfidence: 0.5,
-            minPosePresenceConfidence: 0.5,
-            minTrackingConfidence: 0.5,
+            minPoseDetectionConfidence: 0.3,
+            minPosePresenceConfidence: 0.3,
+            minTrackingConfidence: 0.3,
           });
           if (!cancelled) {
             setModelReady(true);
