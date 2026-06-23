@@ -7,10 +7,8 @@ export function BeatIndicator({ isPlaying, playbackRate }: { isPlaying: boolean,
 
   useEffect(() => {
     const handleBeat = (b: number) => {
-      setBeat(b + 1); // 1-8 instead of 0-7
+      setBeat(b + 1);
       setPulse(true);
-      
-      // Reset pulse quickly
       setTimeout(() => setPulse(false), 150 / playbackRate);
     };
 
@@ -25,16 +23,15 @@ export function BeatIndicator({ isPlaying, playbackRate }: { isPlaying: boolean,
   const isAccented = beat === 1 || beat === 5;
 
   return (
-    <div className="absolute top-4 right-4 flex items-center justify-center">
-      <div 
-        className={`w-16 h-16 rounded-full flex items-center justify-center text-2xl font-bold transition-transform duration-100 ease-out
-          ${pulse ? (isAccented ? 'scale-125 bg-violet-600 text-white' : 'scale-110 bg-violet-500/80 text-white') : 'scale-100 bg-black/40 text-gray-300'}
+    <div className="absolute top-4 right-4 flex items-center justify-center z-20">
+      <div
+        className={`w-12 h-12 rounded-full flex items-center justify-center transition-all duration-75
+          ${pulse ? (isAccented ? 'bg-violet-500 scale-125 shadow-[0_0_20px_rgba(124,58,237,0.6)]' : 'bg-violet-500/70 scale-110') : 'bg-black/40'}
         `}
-        style={{
-           boxShadow: pulse && isAccented ? '0 0 20px rgba(124, 58, 237, 0.8)' : 'none'
-        }}
       >
-        {beat}
+        <span className={`text-lg font-bold ${pulse ? 'text-white' : 'text-gray-400'}`}>
+          {isAccented ? '🥁' : '•'}
+        </span>
       </div>
     </div>
   );
