@@ -117,7 +117,7 @@ export default function WarmUp() {
             </div>
           </div>
 
-          {/* Local video fills the screen */}
+          {/* Local video fills the screen — auto-advances when done */}
           <div className="flex-1 relative bg-black">
             <video
               key={phase}
@@ -125,9 +125,9 @@ export default function WarmUp() {
               src={ex.videoFile}
               className="absolute inset-0 w-full h-full object-contain bg-black"
               autoPlay
-              loop
               muted
               playsInline
+              onEnded={next}
             />
             {/* Instruction overlay */}
             <div className="absolute bottom-0 left-0 right-0 p-4 bg-gradient-to-t from-black/80 to-transparent">

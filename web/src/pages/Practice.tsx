@@ -231,22 +231,16 @@ export default function Practice() {
     loadRoutine();
   }, [id, chunkId, session, switchToChunk]);
 
-  // ── Camera setup ──
+  // ── Camera setup (only once warm-up prompt is dismissed) ──
   useEffect(() => {
+    if (showWarmUpPrompt) return;
     let active = true;
-    let retryCount = 0;
-    const retrySetup = () => {
-      if (retryCount < 10 && !cameraStreamRef.current) {
-        retryCount++;
-        setTimeout(() => setupCamera(), 200);
-      }
-    };
-    async function setupCamera() {
-      if (!webcamRef.current) { retrySetup(); return; }
+    async function setup() {
+      if (!webcamRef.current) return;
       try {
         const stream = await navigator.mediaDevices.getUserMedia({
           video: { width: 640, height: 480, facingMode: 'user' },
-          audio: false
+          audio: false,
         });
         cameraStreamRef.current = stream;
         if (webcamRef.current && active) {
@@ -258,7 +252,7 @@ export default function Practice() {
         setWebcamError('Could not access webcam. Please allow camera permissions.');
       }
     }
-    setupCamera();
+    setup();
     return () => {
       active = false;
       if (cameraStreamRef.current) {
@@ -266,7 +260,7 @@ export default function Practice() {
         cameraStreamRef.current = null;
       }
     };
-  }, []);
+  }, [showWarmUpPrompt]);
 
   // ── Effective playback rate (uses DifficultyScaler for full speed) ──
   const effectivePlaybackRate = phase === 'full'
