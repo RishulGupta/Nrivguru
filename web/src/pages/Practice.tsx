@@ -374,6 +374,38 @@ export default function Practice() {
     return () => cancelAnimationFrame(animationId);
   }, [isWorkerReady, hasWebcam, phase, isPractice, focusArea, processFrame, attemptComplete, pendingAdjustment]);
 
+  // ── Green score chime ──
+  const consecutiveGreenFrames = useRef(0);
+  const lastChimeTime = useRef(0);
+  const [showChime, setShowChime] = useState(false);
+
+  useEffect(() => {
+    if (currentArmScore > 85 && currentLegScore > 85 && isPractice) {
+      consecutiveGreenFrames.current++;
+      if (consecutiveGreenFrames.current >= 4 && Date.now() - lastChimeTime.current > 5000) {
+        try {
+          const ctx = new AudioContext();
+          const osc = ctx.createOscillator();
+          const gain = ctx.createGain();
+          osc.connect(gain);
+          gain.connect(ctx.destination);
+          osc.frequency.value = 880;
+          osc.type = 'sine';
+          gain.gain.setValueAtTime(0.15, ctx.currentTime);
+          gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.3);
+          osc.start(ctx.currentTime);
+          osc.stop(ctx.currentTime + 0.3);
+          lastChimeTime.current = Date.now();
+          consecutiveGreenFrames.current = 0;
+          setShowChime(true);
+          setTimeout(() => setShowChime(false), 1500);
+        } catch { /* ignore */ }
+      }
+    } else {
+      consecutiveGreenFrames.current = 0;
+    }
+  }, [currentArmScore, currentLegScore, isPractice]);
+
   // ── Handle scored attempt finished ──
   const handleScoredAttemptFinished = async () => {
     setAttemptComplete(true);
