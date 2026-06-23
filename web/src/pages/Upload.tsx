@@ -300,7 +300,7 @@ export default function Upload() {
     <div className="min-h-screen bg-background flex flex-col items-center justify-center p-6">
       <div className="w-full max-w-3xl">
         <div className="mb-8 flex items-center justify-between">
-          <h1 className="text-3xl font-outfit font-bold text-white neon-text">Upload Routine</h1>
+          <h1 className="text-3xl font-outfit font-bold text-white neon-text">📹 Upload</h1>
           <button
             onClick={() => {
               if (pipelineState !== 'IDLE' && pipelineState !== 'DONE' && pipelineState !== 'ERROR') {
@@ -311,7 +311,7 @@ export default function Upload() {
             }}
             className="text-muted-foreground hover:text-white transition-colors"
           >
-            {pipelineState !== 'IDLE' && pipelineState !== 'DONE' && pipelineState !== 'ERROR' ? 'Cancel' : 'Back'}
+            {pipelineState !== 'IDLE' && pipelineState !== 'DONE' && pipelineState !== 'ERROR' ? '✕ Cancel' : '← Back'}
           </button>
         </div>
 
@@ -322,8 +322,8 @@ export default function Upload() {
               {pipelineState === 'DONE' ? (
                 <>
                   <CheckCircle className="w-16 h-16 text-green-400 mb-4" />
-                  <h2 className="text-2xl font-bold text-white mb-2">Processing Complete!</h2>
-                  <p className="text-muted-foreground mb-6">Your routine has been segmented and analyzed.</p>
+                  <h2 className="text-2xl font-bold text-white mb-2">✅ All done!</h2>
+                  <p className="text-muted-foreground mb-6">Your routine is ready.</p>
                   <button
                     onClick={() => navigate('/home')}
                     className="bg-primary hover:bg-primary/90 text-white font-semibold px-8 py-3 rounded-xl transition-all shadow-[0_0_15px_rgba(147,51,234,0.3)]"
@@ -335,32 +335,27 @@ export default function Upload() {
                 <>
                   <Loader2 className="w-12 h-12 text-primary animate-spin mb-6" />
                   <h2 className="text-xl font-bold text-white mb-4">
-                    {pipelineState === 'UPLOADING' && 'Extracting thumbnail...'}
-                    {pipelineState === 'CHUNKING' && 'Breaking into learnable sections...'}
-                    {pipelineState === 'ANALYZING_POSE' && 'Extracting your dance movements...'}
-                    {pipelineState === 'SAVING' && 'Preparing slow-motion clips & saving...'}
+                    {pipelineState === 'UPLOADING' && '📸 Reading video...'}
+                    {pipelineState === 'CHUNKING' && '✂️ Splitting into moves...'}
+                    {pipelineState === 'ANALYZING_POSE' && '🦴 Analyzing poses...'}
+                    {pipelineState === 'SAVING' && '💾 Saving...'}
                   </h2>
-                  {/* Step indicators */}
                   <div className="text-left space-y-2 mb-6 w-full max-w-xs">
                     <div className="flex items-center gap-2 text-sm">
                       {progress >= 15 ? <CheckCircle className="w-4 h-4 text-green-400" /> : <Loader2 className="w-4 h-4 text-primary animate-spin" />}
-                      <span className={progress >= 15 ? 'text-green-400' : 'text-white/70'}>Extracting thumbnail</span>
+                      <span className={progress >= 15 ? 'text-green-400' : 'text-white/70'}>📸 Thumbnail</span>
                     </div>
                     <div className="flex items-center gap-2 text-sm">
                       {progress >= 35 ? <CheckCircle className="w-4 h-4 text-green-400" /> : progress >= 20 ? <Loader2 className="w-4 h-4 text-primary animate-spin" /> : <div className="w-4 h-4" />}
-                      <span className={progress >= 35 ? 'text-green-400' : progress >= 20 ? 'text-white' : 'text-white/40'}>Breaking into learnable sections...</span>
+                      <span className={progress >= 35 ? 'text-green-400' : progress >= 20 ? 'text-white' : 'text-white/40'}>✂️ Split into moves</span>
                     </div>
                     <div className="flex items-center gap-2 text-sm">
                       {progress >= 60 ? <CheckCircle className="w-4 h-4 text-green-400" /> : progress >= 35 ? <Loader2 className="w-4 h-4 text-primary animate-spin" /> : <div className="w-4 h-4" />}
-                      <span className={progress >= 60 ? 'text-green-400' : progress >= 35 ? 'text-white' : 'text-white/40'}>Extracting your dance movements</span>
-                    </div>
-                    <div className="flex items-center gap-2 text-sm">
-                      {progress >= 90 ? <CheckCircle className="w-4 h-4 text-green-400" /> : progress >= 65 ? <Loader2 className="w-4 h-4 text-primary animate-spin" /> : <div className="w-4 h-4" />}
-                      <span className={progress >= 90 ? 'text-green-400' : progress >= 65 ? 'text-white' : 'text-white/40'}>Preparing slow-motion clips</span>
+                      <span className={progress >= 60 ? 'text-green-400' : progress >= 35 ? 'text-white' : 'text-white/40'}>🦴 Analyze poses</span>
                     </div>
                     <div className="flex items-center gap-2 text-sm">
                       {progress >= 100 ? <CheckCircle className="w-4 h-4 text-green-400" /> : progress >= 90 ? <Loader2 className="w-4 h-4 text-primary animate-spin" /> : <div className="w-4 h-4" />}
-                      <span className={progress >= 100 ? 'text-green-400' : progress >= 90 ? 'text-white' : 'text-white/40'}>Saving your routine</span>
+                      <span className={progress >= 100 ? 'text-green-400' : progress >= 90 ? 'text-white' : 'text-white/40'}>💾 Saving</span>
                     </div>
                   </div>
                   <div className="w-full max-w-md h-2 bg-white/10 rounded-full mt-4 overflow-hidden">
@@ -378,7 +373,7 @@ export default function Upload() {
             <div className="bg-destructive/20 border border-destructive text-destructive px-4 py-3 rounded-xl mb-6 flex items-start gap-3">
               <AlertCircle className="w-5 h-5 shrink-0 mt-0.5" />
               <div className="flex-1">
-                <p className="font-semibold">Processing Failed</p>
+                <p className="font-semibold">⚠️ Failed</p>
                 <p className="text-sm opacity-90">{error}</p>
               </div>
               <button onClick={reset} className="text-xs font-semibold px-2 py-1 hover:bg-destructive/10 rounded">Dismiss</button>
@@ -398,14 +393,14 @@ export default function Upload() {
               <div className="w-16 h-16 bg-white/5 rounded-full flex items-center justify-center mb-4 group-hover:bg-primary/20 transition-colors">
                 <UploadIcon className="w-8 h-8 text-muted-foreground group-hover:text-primary transition-colors" />
               </div>
-              <h3 className="text-xl font-bold text-white mb-2">Select Reference Video</h3>
+              <h3 className="text-xl font-bold text-white mb-2">📹 Select a dance video</h3>
               <p className="text-muted-foreground text-sm max-w-sm mb-6">
-                Upload a full dance routine. Our AI will automatically slice it into learnable chunks and extract 3D joint data.
-                Your video stays on your device. Only your dance movements are saved.
+                Upload a dance and AI will split it into steps.
+                Your video stays on your device.
               </p>
-              <p className="text-xs text-muted-foreground mb-4">Supports MP4, MOV, AVI, WebM — Max 500MB</p>
+              <p className="text-xs text-muted-foreground mb-4">MP4, MOV, WebM — Max 500MB</p>
               <button className="bg-white/10 hover:bg-white/20 text-white font-semibold px-6 py-2 rounded-lg transition-all">
-                Browse Files
+                Browse
               </button>
               <input
                 type="file"
@@ -439,7 +434,7 @@ export default function Upload() {
 
               {/* Style tag selector */}
               <div>
-                <label className="text-sm text-white font-semibold block mb-2">Routine Name</label>
+                <label className="text-sm text-white font-semibold block mb-2">📛 Name</label>
                 <input
                   type="text"
                   value={routineTitle}
@@ -449,7 +444,7 @@ export default function Upload() {
               </div>
 
               <div>
-                <label className="text-sm text-white font-semibold block mb-2">Style Tag</label>
+                <label className="text-sm text-white font-semibold block mb-2">🎵 Style</label>
                 <select
                   value={styleTag}
                   onChange={e => setStyleTag(e.target.value)}
