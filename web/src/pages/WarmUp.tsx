@@ -1,4 +1,4 @@
-import { useState, useRef } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { SkipForward, ArrowRight, Play } from 'lucide-react';
 
@@ -46,15 +46,30 @@ export default function WarmUp() {
   const { id, chunkId } = useParams();
   const navigate = useNavigate();
   const [phase, setPhase] = useState<number>(-1);
-  const videoRef = useRef<HTMLVideoElement>(null);
+  const tutorialRef = useRef<HTMLVideoElement>(null);
+  const camRef = useRef<HTMLVideoElement>(null);
+
+  // ── Simple camera mirror (no AI processing) ──
+  useEffect(() => {
+    if (phase < 0) return;
+    let stream: MediaStream | null = null;
+    navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user' }, audio: false })
+      .then(s => {
+        stream = s;
+        if (camRef.current) {
+          camRef.current.srcObject = s;
+          camRef.current.play();
+        }
+      })
+      .catch(() => {});
+    return () => { stream?.getTracks().forEach(t => t.stop()); };
+  }, [phase]);
 
   const goToPractice = () => {
     navigate(`/practice/${id}/${chunkId || 'full'}`, { state: { warmupDone: true } });
   };
 
-  const start = () => {
-    setPhase(0);
-  };
+  const start = () => setPhase(0);
 
   const next = () => {
     if (phase < PHASES.length - 1) {
@@ -99,10 +114,9 @@ export default function WarmUp() {
         </div>
       )}
 
-      {/* ── EXERCISE ── */}
+      {/* ── EXERCISE: split-screen tutorial + mirror ── */}
       {ex && (
         <>
-          {/* Header */}
           <div className="flex items-center justify-between px-4 py-2 bg-black/80 border-b border-white/5 shrink-0">
             <div className="flex items-center gap-2">
               <span className="text-xl">{ex.emoji}</span>
@@ -117,21 +131,39 @@ export default function WarmUp() {
             </div>
           </div>
 
-          {/* Local video fills the screen — auto-advances when done */}
-          <div className="flex-1 relative bg-black">
-            <video
-              key={phase}
-              ref={videoRef}
-              src={ex.videoFile}
-              className="absolute inset-0 w-full h-full object-contain bg-black"
-              autoPlay
-              muted
-              playsInline
-              onEnded={next}
-            />
-            {/* Instruction overlay */}
-            <div className="absolute bottom-0 left-0 right-0 p-4 bg-gradient-to-t from-black/80 to-transparent">
-              <p className="text-sm text-gray-200">{ex.instruction}</p>
+          {/* Split screen: tutorial | camera mirror */}
+          <div className="flex-1 flex min-h-0">
+            {/* Left: tutorial video */}
+            <div className="flex-1 relative bg-black">
+              <video
+                ref={tutorialRef}
+                src={ex.videoFile}
+                className="absolute inset-0 w-full h-full object-contain"
+                autoPlay
+                muted
+                playsInline
+                onEnded={next}
+              />
+              <span className="absolute top-2 left-3 z-10 text-[10px] text-gray-400 uppercase tracking-wider bg-black/50 px-1.5 py-0.5 rounded">
+                Guide
+              </span>
+            </div>
+
+            {/* Right: camera mirror */}
+            <div className="flex-1 relative bg-black">
+              <video
+                ref={camRef}
+                className="absolute inset-0 w-full h-full object-cover scale-x-[-1]"
+                muted
+                playsInline
+              />
+              <span className="absolute top-2 left-3 z-10 text-[10px] text-gray-400 uppercase tracking-wider bg-black/50 px-1.5 py-0.5 rounded">
+                You
+              </span>
+              {/* Instruction overlay */}
+              <div className="absolute bottom-0 left-0 right-0 p-3 bg-gradient-to-t from-black/60 to-transparent">
+                <p className="text-xs text-gray-300">{ex.instruction}</p>
+              </div>
             </div>
           </div>
 
