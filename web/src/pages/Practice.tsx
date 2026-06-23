@@ -29,6 +29,7 @@ export default function Practice() {
 
   const webcamRef = useRef<HTMLVideoElement>(null);
   const refVideoRef = useRef<HTMLVideoElement>(null);
+  const cameraStreamRef = useRef<MediaStream | null>(null);
 
   const [hasWebcam, setHasWebcam] = useState(false);
   const [webcamError, setWebcamError] = useState('');
@@ -53,11 +54,32 @@ const [loadingData, setLoadingData] = useState(true);
       send: sendSessionEvent 
     } = usePracticeSession();
 
-  const { 
-    isWorkerReady, 
-    userPose, 
-    jointScores, 
-    currentArmScore, 
+  // Chunk navigation
+  const switchToChunk = useCallback((chunks: Chunk[], idx: number) => {
+    if (idx < 0 || idx >= chunks.length) return;
+    const c = chunks[idx];
+    setChunk(c);
+    setCurrentChunkIndex(idx);
+    setAttemptComplete(false);
+    setFinalScore(null);
+    setProprioQuestion(null);
+    lastBreathingCueIndex.current = -1;
+    if (c?.pose_slice_json) {
+      try {
+        const poses = typeof c.pose_slice_json === 'string' ? JSON.parse(c.pose_slice_json) : c.pose_slice_json;
+        setReferencePoses(poses);
+        loadReference(poses);
+        setKeyframes(extractKeyframes(poses, 4));
+      } catch (e) { console.error('parse error', e); }
+    }
+    sendSessionEvent({ type: 'START_CHUNK', chunkIndex: idx });
+  }, [loadReference, sendSessionEvent]);
+
+  const {
+    isWorkerReady,
+    userPose,
+    jointScores,
+    currentArmScore,
     currentLegScore,
     pendingAdjustment,
     lowVisibility,
@@ -118,33 +140,14 @@ const [loadingData, setLoadingData] = useState(true);
         setRoutine(data);
         const c = data.chunks || [];
         setChunks(c);
-        let activeChunk = c[0];
+        let startIdx = 0;
         if (chunkId && chunkId !== 'full') {
-          const found = c.find((ch: any) => ch.id === chunkId || String(ch.chunk_index) === chunkId);
-          if (found) activeChunk = found;
+          const found = c.findIndex((ch: Chunk) => ch.id === chunkId || String(ch.chunk_index) === chunkId);
+          if (found >= 0) startIdx = found;
         }
-        setChunk(activeChunk);
-        
-        // Load pre-extracted poses if available
-        if (activeChunk?.pose_slice_json) {
-          try {
-            const poses = typeof activeChunk.pose_slice_json === 'string' 
-              ? JSON.parse(activeChunk.pose_slice_json) 
-              : activeChunk.pose_slice_json;
-            setReferencePoses(poses);
-            loadReference(poses);
-            setKeyframes(extractKeyframes(poses, 4));
-          } catch(e) {
-             console.error("Failed to parse pose_slice_json", e);
-          }
-        }
+        switchToChunk(c, startIdx);
       }
       setLoadingData(false);
-      
-      // Auto-start chunk
-      if (data) {
-         sendSessionEvent({ type: 'START_CHUNK', chunkIndex: 0 });
-      }
     }
     loadRoutine();
   }, [id, chunkId, session, loadReference, sendSessionEvent]);
