@@ -134,7 +134,8 @@ self.onmessage = async (e: MessageEvent) => {
                     jointScores,
                     armScore,
                     legScore,
-                    pendingAdjustment: correctionEngine.getPendingAdjustment()
+                    pendingAdjustment: correctionEngine.getPendingAdjustment(),
+                    isFrustrated: correctionEngine.isFrustrated()
                   }
                 });
             } else {
@@ -162,6 +163,10 @@ self.onmessage = async (e: MessageEvent) => {
         }
       } catch (err) {
         console.error('Worker processing error:', err);
+        self.postMessage({
+          type: 'FRAME_RESULT',
+          payload: { pose: null, error: String(err) }
+        });
       }
       break;
 
