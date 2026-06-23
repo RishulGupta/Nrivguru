@@ -599,6 +599,40 @@ export default function Practice() {
   const hasAllChunks = _allChunks.length > 0;
 
   // ── Warm-up prompt (Step 0) ──
+  if (showWarmUpPrompt && !loadingData) {
+    return (
+      <div className="min-h-screen bg-black flex items-center justify-center p-6">
+        <div className="bg-black/60 backdrop-blur-xl border border-white/10 p-8 rounded-3xl max-w-md w-full text-center shadow-2xl space-y-6 animate-in fade-in zoom-in duration-500">
+          <p className="text-5xl">🏋️</p>
+          <h1 className="text-3xl font-outfit font-bold text-white">Warm up first?</h1>
+          <p className="text-gray-400 text-sm">
+            A quick 1-minute warm-up helps prevent injuries and calibrates your camera tracking.
+          </p>
+          <div className="flex flex-col gap-3 pt-4">
+            <button
+              onClick={() => navigate(`/warmup/${id}/${chunk?.chunk_index || 'full'}`)}
+              className="w-full py-4 bg-primary hover:bg-primary/90 text-white rounded-xl font-bold shadow-[0_0_20px_rgba(147,51,234,0.4)] transition-all text-lg"
+            >
+              🔥 Start warm-up
+            </button>
+            <button
+              onClick={() => {
+                setShowWarmUpPrompt(false);
+                speechManager.speak("Let's begin the lesson.", "normal");
+              }}
+              className="w-full py-4 bg-white/5 hover:bg-white/10 text-gray-300 rounded-xl font-medium transition-all text-base"
+            >
+              ⏭️ Skip — I'm ready
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="min-h-screen bg-black flex flex-col relative overflow-hidden">
+
       {/* ── Loading overlay ── */}
       {(loadingData || !isWorkerReady) && (
         <div className="fixed inset-0 z-[100] bg-neutral-900 flex items-center justify-center">
