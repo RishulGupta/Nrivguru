@@ -13,6 +13,8 @@ interface PoseDetectionState {
   pendingAdjustment: { jointId: string, targetDiff: number } | null;
   lowVisibility: boolean;
   userStopped: boolean;
+  isFrustrated: boolean;
+  framesReceived: number;
 }
 
 let globalWorker: Worker | null = null;
@@ -27,7 +29,9 @@ export function usePoseDetection() {
     currentLegScore: 0,
     pendingAdjustment: null,
     lowVisibility: false,
-    userStopped: false
+    userStopped: false,
+    isFrustrated: false,
+    framesReceived: 0
   });
 
   // Track the finish attempt callback
@@ -57,7 +61,9 @@ export function usePoseDetection() {
           currentArmScore: payload.armScore || 0,
           currentLegScore: payload.legScore || 0,
           pendingAdjustment: payload.pendingAdjustment || null,
-          lowVisibility: false
+          lowVisibility: false,
+          isFrustrated: payload.isFrustrated || false,
+          framesReceived: s.framesReceived + 1
         }));
       } else if (type === 'ATTEMPT_FINISHED') {
         if (onAttemptFinishedRef.current) {
