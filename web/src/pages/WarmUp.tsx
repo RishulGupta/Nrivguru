@@ -46,6 +46,7 @@ export default function WarmUp() {
   const { id, chunkId } = useParams();
   const navigate = useNavigate();
   const [phase, setPhase] = useState<number>(-1);
+  const [remaining, setRemaining] = useState(0);
   const tutorialRef = useRef<HTMLVideoElement>(null);
   const camRef = useRef<HTMLVideoElement>(null);
 
@@ -71,7 +72,13 @@ export default function WarmUp() {
 
   const start = () => setPhase(0);
 
+  const handleTimeUpdate = () => {
+    const v = tutorialRef.current;
+    if (v && v.duration) setRemaining(Math.ceil(v.duration - v.currentTime));
+  };
+
   const next = () => {
+    setRemaining(0);
     if (phase < PHASES.length - 1) {
       setPhase(phase + 1);
     } else {
@@ -143,10 +150,17 @@ export default function WarmUp() {
                 muted
                 playsInline
                 onEnded={next}
+                onTimeUpdate={handleTimeUpdate}
               />
               <span className="absolute top-2 left-3 z-10 text-[10px] text-gray-400 uppercase tracking-wider bg-black/50 px-1.5 py-0.5 rounded">
                 Guide
               </span>
+              {/* Countdown badge */}
+              <div className="absolute bottom-3 right-3 z-10 bg-black/60 backdrop-blur border border-white/10 rounded-lg px-2.5 py-1">
+                <span className="text-sm font-mono font-bold text-white tabular-nums">
+                  {remaining > 0 ? `${remaining}s` : '...'}
+                </span>
+              </div>
             </div>
 
             {/* Right: camera mirror */}
