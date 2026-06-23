@@ -162,7 +162,7 @@ export const lessonMachine = setup({
     },
     // START_CHUNK works from any state (global) — used for chunk navigation
     START_CHUNK: {
-      target: 'teach',
+      target: '.teach',
       actions: [
         ({ context, event }) => { context.chunkIndex = event.chunkIndex; },
         'resetAttempt'
