@@ -15,10 +15,12 @@ import { countingSystem } from '@taal/shared/utils/CountingSystem';
 import { TeachPhase } from '../components/TeachPhase';
 import { extractKeyframes } from '@taal/shared/utils/KeyframeExtractor';
 import { BeatIndicator } from '../components/BeatIndicator';
+import { CorrectionEngine } from '@taal/shared/utils/CorrectionEngine';
 import { TeacherPersonality } from '@taal/shared/utils/TeacherPersonality';
 import { sessionMemory } from '@taal/shared/utils/SessionMemory';
 import { DifficultyScaler } from '@taal/shared/utils/DifficultyScaler';
 import { getOriginalVideoUrl } from '../utils/videoStore';
+import { getStyleConfig } from '@taal/shared/utils/StyleConfig';
 
 export default function Practice() {
   const { id, chunkId } = useParams();
@@ -34,9 +36,12 @@ export default function Practice() {
   
   // Data
   const [routine, setRoutine] = useState<Routine | null>(null);
-  const [chunk, setChunk] = useState<Chunk | null>(null);
+  const [_allChunks, setAllChunks] = useState<Chunk[]>([]);
+const [chunk, setChunk] = useState<Chunk | null>(null);
   const [_chunks, setChunks] = useState<Chunk[]>([]);
-  const [loadingData, setLoadingData] = useState(true);
+  const [currentChunkIndex, setCurrentChunkIndex] = useState(0);
+const [showWarmUpPrompt, setShowWarmUpPrompt] = useState(false);
+const [loadingData, setLoadingData] = useState(true);
 
   // New hooks
     const { 
