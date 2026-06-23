@@ -492,7 +492,6 @@ export default function Practice() {
   // ── Preparation timer done ──
   const handlePrepDone = useCallback(() => {
     sendSessionEvent({ type: 'PREPARATION_DONE' });
-    speechManager.speak("5, 6, 7, 8", 'urgent');
   }, [sendSessionEvent]);
 
   // ── Dynamic navigation ──

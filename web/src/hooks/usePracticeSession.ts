@@ -186,7 +186,8 @@ export function usePracticeSession() {
                      phase === 'combine' || phase === 'full';
 
   // Derived properties based on phase
-  const playbackRate = phase === 'arms' || phase === 'legs' ? 0.5 :
+  const playbackRate = phase === 'watch' ? 0.75 :
+                       phase === 'arms' || phase === 'legs' ? 0.5 :
                        phase === 'combine' ? 0.75 :
                        phase === 'full' ? 1.0 : 1.0;
 
