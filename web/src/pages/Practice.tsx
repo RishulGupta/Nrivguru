@@ -771,7 +771,6 @@ export default function Practice() {
             </div>
           )}
         </header>
-      )}
 
       {/* ── Main area (hidden via CSS so video refs stay alive) ── */}
       <div className={`flex-1 flex-col ${showImprovement ? 'hidden' : 'flex'}`}>
@@ -939,7 +938,6 @@ export default function Practice() {
           </div>
         </main>
       </div>
-      )}
 
       {/* ── Completion AAR overlay (existing, non-improvement) ── */}
       {attemptComplete && finalScore && !showImprovement && (
