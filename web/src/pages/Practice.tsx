@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useCallback, useMemo } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import { Loader2, Camera, SkipForward, SkipBack, ChevronLeft, ChevronRight } from 'lucide-react';
 import SkeletonCanvas from '../components/SkeletonCanvas';
 import ScoreDisplay from '../components/ScoreDisplay';
@@ -142,8 +142,15 @@ export default function Practice() {
   }, [phase]);
 
   // ── Session memory & warm-up prompt ──
+  const location = useLocation();
+  const warmupDone = (location.state as any)?.warmupDone;
   useEffect(() => {
     if (routine) {
+      // If user just came from warm-up page, skip the prompt
+      if (warmupDone) {
+        setShowWarmUpPrompt(false);
+        return;
+      }
       sessionMemory.getLastSessionForRoutine(routine.id).then(lastSession => {
         if (lastSession && lastSession.worstJoints.length > 0) {
           speechManager.speak(

@@ -19,7 +19,7 @@ const PHASE_CONFIG: Record<Exclude<WarmUpPhase, 'intro' | 'done'>, ExerciseConfi
     emoji: '🔄',
     title: 'Neck Rolls',
     instruction: "Gently roll your head from side to side in a slow circle.",
-    repsNeeded: 4,
+    repsNeeded: 3,
     videoUrl: 'https://www.youtube.com/embed/NZHdC0aeJIs?autoplay=1&loop=1&mute=1&playlist=NZHdC0aeJIs&rel=0',
   },
   shoulders: {
@@ -119,33 +119,55 @@ function analyzeMotion(
 
   switch (exercise) {
     case 'neck': {
+      // Simple left/right alternation — much more forgiving than full-circle detection
       if (v(0) < 0.4 || v(11) < 0.3 || v(12) < 0.3) return { rep: false, feedback: 'Face the camera' };
       const nose = landmarks[0];
       const sMidX = (landmarks[11].x + landmarks[12].x) / 2;
-      const sMidY = (landmarks[11].y + landmarks[12].y) / 2;
       const dx = nose.x - sMidX;
-      const dy = nose.y - sMidY;
-      const dist = Math.sqrt(dx * dx + dy * dy);
-      if (dist < 0.02) {
-        motionRef.current = { ...motionRef.current, phase: 'waiting' };
-        return { rep: false, feedback: 'Move your head around' };
+
+      // Determine if head is tilted left or right (relative to shoulder center)
+      const isLeft = dx < -0.01;
+      const isRight = dx > 0.01;
+      const isCenter = Math.abs(dx) < 0.008;
+
+      const state = motionRef.current;
+      if (state.phase === 'waiting') {
+        state.prevX = dx;
+        if (isLeft || isRight) {
+          state.phase = 'moving';
+          state.prevX = dx;
+        }
+        return { rep: false, feedback: isCenter ? 'Move your head side to side' : 'Good, keep going' };
       }
-      const angle = Math.atan2(dy, dx);
-      const prevAngle = Math.atan2(motionRef.current.prevY - sMidY, motionRef.current.prevX - sMidX);
-      let angleDiff = angle - prevAngle;
-      if (angleDiff > Math.PI) angleDiff -= Math.PI * 2;
-      if (angleDiff < -Math.PI) angleDiff += Math.PI * 2;
-      if (motionRef.current.phase === 'moving' && Math.abs(angleDiff) > 1.5) {
-        motionRef.current.count++;
-        motionRef.current.phase = 'recovered';
-        motionRef.current.prevX = nose.x;
-        motionRef.current.prevY = nose.y;
-        return { rep: true, feedback: motionRef.current.count >= 4 ? '' : 'Great roll!' };
+
+      if (state.phase === 'moving') {
+        // Track direction change for a rep: left→right or right→left counts
+        if ((state.prevX < -0.01 && isRight) || (state.prevX > 0.01 && isLeft)) {
+          state.count++;
+          state.phase = 'recovered';
+          state.prevX = dx;
+          return { rep: true, feedback: state.count >= 3 ? '' : 'Nice! Other side' };
+        }
+        state.prevX = dx;
+        return { rep: false, feedback: 'Keep rolling your head' };
       }
-      motionRef.current.phase = 'moving';
-      motionRef.current.prevX = nose.x;
-      motionRef.current.prevY = nose.y;
-      return { rep: false, feedback: dist > 0.05 ? 'Good motion' : 'Keep rolling' };
+
+      if (state.phase === 'recovered') {
+        state.prevX = dx;
+        // Reset to center before allowing next rep
+        if (isCenter) {
+          state.phase = 'waiting';
+        } else if ((state.prevX < -0.01 && isRight) || (state.prevX > 0.01 && isLeft)) {
+          // Already moving to other side — count another
+          state.count++;
+          state.phase = 'recovered';
+          state.prevX = dx;
+          return { rep: true, feedback: state.count >= 3 ? '' : 'Great!' };
+        }
+        return { rep: false, feedback: 'Bring your head to center' };
+      }
+
+      return { rep: false, feedback: '' };
     }
 
     case 'shoulders': {
@@ -464,7 +486,7 @@ export default function WarmUp() {
       setPhase('done');
       speechManager.speak('Warm-up complete! You are ready to dance.', 'praise');
       setTimeout(() => {
-        navigate(`/practice/${id}/${chunkId || 'full'}`);
+        navigate(`/practice/${id}/${chunkId || 'full'}`, { state: { warmupDone: true } });
       }, 2000);
     }
   }, [phase, navigate, id, chunkId]);
@@ -488,7 +510,7 @@ export default function WarmUp() {
   };
 
   const skipToPractice = () => {
-    navigate(`/practice/${id}/${chunkId || 'full'}`);
+    navigate(`/practice/${id}/${chunkId || 'full'}`, { state: { warmupDone: true } });
   };
 
   const handleVideoError = (exercise: string) => {
