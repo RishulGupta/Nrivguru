@@ -50,20 +50,31 @@ export default function WarmUp() {
   const tutorialRef = useRef<HTMLVideoElement>(null);
   const camRef = useRef<HTMLVideoElement>(null);
 
-  // ── Simple camera mirror (no AI processing) ──
+  const camStreamRef = useRef<MediaStream | null>(null);
+
+  // ── Simple camera mirror (no AI processing, cleaned up on exit) ──
   useEffect(() => {
     if (phase < 0) return;
-    let stream: MediaStream | null = null;
+    let cancelled = false;
+
     navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user' }, audio: false })
       .then(s => {
-        stream = s;
+        if (cancelled) { s.getTracks().forEach(t => t.stop()); return; }
+        camStreamRef.current = s;
         if (camRef.current) {
           camRef.current.srcObject = s;
           camRef.current.play();
         }
       })
       .catch(() => {});
-    return () => { stream?.getTracks().forEach(t => t.stop()); };
+
+    return () => {
+      cancelled = true;
+      if (camStreamRef.current) {
+        camStreamRef.current.getTracks().forEach(t => t.stop());
+        camStreamRef.current = null;
+      }
+    };
   }, [phase]);
 
   const goToPractice = () => {

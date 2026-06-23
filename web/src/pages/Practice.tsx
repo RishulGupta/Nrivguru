@@ -598,8 +598,10 @@ export default function Practice() {
   const totalChunks = _allChunks.length || 1;
   const hasAllChunks = _allChunks.length > 0;
 
-  // ── Warm-up prompt (Step 0) ──
-  if (showWarmUpPrompt && !loadingData) {
+  // ── Warm-up prompt (only before first segment) ──
+  const [showSkipConfirm, setShowSkipConfirm] = useState(false);
+
+  if (showWarmUpPrompt && !loadingData && currentChunkIndex === 0) {
     return (
       <div className="min-h-screen bg-black flex items-center justify-center p-6">
         <div className="bg-black/60 backdrop-blur-xl border border-white/10 p-8 rounded-3xl max-w-md w-full text-center shadow-2xl space-y-6 animate-in fade-in zoom-in duration-500">
@@ -608,23 +610,45 @@ export default function Practice() {
           <p className="text-gray-400 text-sm">
             A quick 1-minute warm-up helps prevent injuries and calibrates your camera tracking.
           </p>
-          <div className="flex flex-col gap-3 pt-4">
-            <button
-              onClick={() => navigate(`/warmup/${id}/${chunk?.chunk_index || 'full'}`)}
-              className="w-full py-4 bg-primary hover:bg-primary/90 text-white rounded-xl font-bold shadow-[0_0_20px_rgba(147,51,234,0.4)] transition-all text-lg"
-            >
-              🔥 Start warm-up
-            </button>
-            <button
-              onClick={() => {
-                setShowWarmUpPrompt(false);
-                speechManager.speak("Let's begin the lesson.", "normal");
-              }}
-              className="w-full py-4 bg-white/5 hover:bg-white/10 text-gray-300 rounded-xl font-medium transition-all text-base"
-            >
-              ⏭️ Skip — I'm ready
-            </button>
-          </div>
+
+          {showSkipConfirm ? (
+            <div className="space-y-4 pt-4">
+              <p className="text-yellow-400 text-sm font-medium">Are you sure you want to skip the warm-up?</p>
+              <div className="flex gap-3">
+                <button
+                  onClick={() => {
+                    setShowSkipConfirm(false);
+                    setShowWarmUpPrompt(false);
+                    speechManager.speak("Let's begin the lesson.", "normal");
+                  }}
+                  className="flex-1 py-3 bg-red-500/20 hover:bg-red-500/30 text-red-300 border border-red-500/30 rounded-xl font-medium transition-all text-sm"
+                >
+                  Yes, skip
+                </button>
+                <button
+                  onClick={() => setShowSkipConfirm(false)}
+                  className="flex-1 py-3 bg-white/10 hover:bg-white/20 text-white rounded-xl font-medium transition-all text-sm"
+                >
+                  No, go back
+                </button>
+              </div>
+            </div>
+          ) : (
+            <div className="flex flex-col gap-3 pt-4">
+              <button
+                onClick={() => navigate(`/warmup/${id}/${chunk?.chunk_index || 'full'}`)}
+                className="w-full py-4 bg-primary hover:bg-primary/90 text-white rounded-xl font-bold shadow-[0_0_20px_rgba(147,51,234,0.4)] transition-all text-lg"
+              >
+                🔥 Start warm-up
+              </button>
+              <button
+                onClick={() => setShowSkipConfirm(true)}
+                className="w-full py-4 bg-white/5 hover:bg-white/10 text-gray-300 rounded-xl font-medium transition-all text-base"
+              >
+                ⏭️ Skip — I'm ready
+              </button>
+            </div>
+          )}
         </div>
       </div>
     );
