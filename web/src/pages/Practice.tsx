@@ -685,9 +685,9 @@ export default function Practice() {
       )}
 
       {/* ── Top bar (Dynamic Navigation) ── */}
-      {!isPreparation && !showImprovement && (
-        <header className={`absolute top-0 left-0 w-full z-50 px-6 py-4 flex items-center justify-between
-          ${phase === 'teach' ? 'hidden' : ''}`}
+      <header className={`w-full z-50 px-6 py-4 flex items-center justify-between ${
+        isPreparation || showImprovement ? 'hidden' : ''
+      } ${phase === 'teach' ? 'hidden' : ''}`}
         >
           <button
             onClick={handleFinishSession}
@@ -773,8 +773,8 @@ export default function Practice() {
         </header>
       )}
 
-      {/* ── Main area ── */}
-      {!showImprovement && (
+      {/* ── Main area (hidden via CSS so video refs stay alive) ── */}
+      <div className={`flex-1 flex-col ${showImprovement ? 'hidden' : 'flex'}`}>
         <main className="flex-1 flex flex-col lg:flex-row w-full h-full relative">
           {/* ── LEFT: Reference video ── */}
           <div className="flex-1 relative bg-gray-900 border-r border-white/10 overflow-hidden">
@@ -938,6 +938,7 @@ export default function Practice() {
             )}
           </div>
         </main>
+      </div>
       )}
 
       {/* ── Completion AAR overlay (existing, non-improvement) ── */}
