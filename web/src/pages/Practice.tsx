@@ -644,7 +644,8 @@ export default function Practice() {
 
       if (v && w && isPractice && !attemptComplete) {
         if (v.paused && !pendingAdjustment) v.play().catch(() => {});
-        if (!v.paused || pendingAdjustment) {
+        // Only send frames when webcam has actual pixel data (readyState ≥ 2)
+        if ((!v.paused || pendingAdjustment) && w.readyState >= 2) {
           processFrame(w, v.currentTime * 1000, focusArea as FocusArea);
         }
       }
