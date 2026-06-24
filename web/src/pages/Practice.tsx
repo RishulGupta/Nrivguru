@@ -214,12 +214,9 @@ export default function Practice() {
     currentLegScore,
     pendingAdjustment,
     lowVisibility,
-    userStopped,
-    isFrustrated,
     loadReference,
     processFrame,
     finishAttempt,
-    clearUserStopped,
     captureReferenceFrame
   } = usePoseDetection();
 
@@ -524,20 +521,6 @@ export default function Practice() {
   }, [chunk, routine, phase, effectivePlaybackRate, attemptComplete, pendingAdjustment, isPractice]);
 
   // ── Main processing loop ──
-  const [processingActive, setProcessingActive] = useState(false);
-  const processedFrames = useRef(0);
-
-  // Check if frames are being received
-  useEffect(() => {
-    if (isPractice) {
-      const prev = processedFrames.current;
-      const timeout = setTimeout(() => {
-        setProcessingActive(processedFrames.current !== prev);
-      }, 3000);
-      return () => clearTimeout(timeout);
-    }
-  }, [phase, isPractice]);
-
   useEffect(() => {
     let animationId: number;
     const loop = () => {
@@ -547,7 +530,6 @@ export default function Practice() {
       if (v && w && isPractice && !attemptComplete) {
         if (v.paused && !pendingAdjustment) v.play().catch(() => {});
         if (!v.paused || pendingAdjustment) {
-          processedFrames.current++;
           processFrame(w, v.currentTime * 1000, focusArea as FocusArea);
         }
       }
@@ -736,11 +718,6 @@ export default function Practice() {
     sendSessionEvent({ type: 'RESTART_CHUNK' });
   };
 
-  const handleSlowDown = useCallback(() => {
-    difficultyScaler.forceSlowDown();
-    clearUserStopped();
-    sendSessionEvent({ type: 'RESTART_CHUNK' });
-  }, [difficultyScaler, sendSessionEvent, clearUserStopped]);
 
   // ── Chunk navigation ──
   const nextChunk = useCallback(() => {
