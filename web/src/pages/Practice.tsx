@@ -418,10 +418,24 @@ export default function Practice() {
     return () => { active = false; };
   }, [showWarmUpPrompt, showModeSelector, setupCamera]);
 
-  // ── Effective playback rate (uses DifficultyScaler for full speed) ──
+  // ── Effective playback rate ──
+  // Arms phase always 0.5×; DifficultyScaler only applies in full phase
   const effectivePlaybackRate = phase === 'full'
     ? difficultyScaler.getPlaybackRate()
     : playbackRate;
+
+  // Announce speed changes in full phase
+  const prevRateRef = useRef(effectivePlaybackRate);
+  useEffect(() => {
+    const prev = prevRateRef.current;
+    prevRateRef.current = effectivePlaybackRate;
+    if (phase !== 'full' || Math.abs(prev - effectivePlaybackRate) < 0.04) return;
+    if (effectivePlaybackRate < prev) {
+      speechManager.speak('Slowing down a bit — nail those arm positions', 'normal');
+    } else {
+      speechManager.speak('Looking good — picking up the pace', 'normal');
+    }
+  }, [effectivePlaybackRate, phase]);
 
   // ── Reference video sync with chunk + phase ──
   const [videoError, setVideoError] = useState('');
