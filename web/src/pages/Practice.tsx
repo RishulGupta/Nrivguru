@@ -503,7 +503,7 @@ export default function Practice() {
     }
 
     // Adapt Difficulty
-    difficultyScaler.evaluateAttempt(score.overallScore);
+    difficultyScaler.evaluateAttempt(score.armScore, score.legScore, score.timingScore);
 
     // Proprioceptive Questioning
     if (session?.user?.id && id) {
