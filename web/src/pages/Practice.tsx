@@ -1067,12 +1067,15 @@ export default function Practice() {
           </div>
         )}
 
-        {/* Skeleton overlay — mirrored to match camera */}
+        {/* Skeleton overlay — both user and ref landmarks are in the same coordinate space */}
+        {/* ponytail: mirror via CSS on user landmarks, mirror ref landmarks in JS to match */}
         <div className={`absolute inset-0 pointer-events-none ${isMirrorMode ? 'scale-x-[-1]' : ''}`}>
           {userPose && (
             <SkeletonCanvas
               landmarks={userPose}
-              refLandmarks={currentRefPose}
+              refLandmarks={isMirrorMode && currentRefPose
+                ? currentRefPose.map(lm => ({ ...lm, x: 1 - lm.x }))
+                : currentRefPose}
               focusArea={phase as any}
               showArrows={false}
               width={640}
