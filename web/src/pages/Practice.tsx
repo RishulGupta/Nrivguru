@@ -696,9 +696,19 @@ export default function Practice() {
   }, []);
 
   // ── Current reference skeleton ──
-  const currentRefPose = referencePoses.length > 0 && refVideoRef.current
-    ? referencePoses.find(p => p.timestamp_ms >= refVideoRef.current!.currentTime * 1000)?.landmarks
-    : undefined;
+  // ponytail: closest frame by absolute distance, not first-after; forgives ≤500ms timing errors
+  const currentRefPose = useMemo(() => {
+    if (!referencePoses.length || !refVideoRef.current) return undefined;
+    const tMs = refVideoRef.current.currentTime * 1000;
+    let best = referencePoses[0], bestDist = Math.abs(tMs - best.timestamp_ms);
+    for (const p of referencePoses) {
+      const d = Math.abs(tMs - p.timestamp_ms);
+      if (d < bestDist) { bestDist = d; best = p; }
+      if (p.timestamp_ms > tMs + 500) break; // early exit once we've passed
+    }
+    return best.landmarks;
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [referencePoses, refVideoRef.current?.currentTime]);
 
   // ── Determine dynamic score display value ──
   const displayScore = focusArea === 'arms' ? currentArmScore
