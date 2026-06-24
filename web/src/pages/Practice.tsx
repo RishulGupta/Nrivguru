@@ -883,13 +883,13 @@ export default function Practice() {
   return (
     <div className="h-dvh bg-black flex flex-col overflow-hidden">
 
-      {/* ── Loading overlay ── */}
-      {(loadingData || !isWorkerReady) && (
-        <div className="fixed inset-0 z-[100] bg-neutral-900 flex items-center justify-center">
-          <div className="flex flex-col items-center gap-4 text-emerald-400">
-            <Loader2 className="w-8 h-8 animate-spin" />
-            <p className="text-white text-lg">🎬 Getting ready...</p>
-            <p className="text-gray-500 text-sm">Starting camera & AI tracker</p>
+      {/* ── Cold start overlay — show camera behind, warm-up message on top ── */}
+      {/* ponytail: camera shows immediately; only AI tracker message, no spinner blocking view */}
+      {!isWorkerReady && (
+        <div className="fixed inset-0 z-[100] pointer-events-none flex flex-col items-center justify-end pb-16">
+          <div className="bg-black/60 backdrop-blur-md px-6 py-3 rounded-2xl border border-white/10 flex items-center gap-3">
+            <Loader2 className="w-4 h-4 animate-spin text-violet-400 flex-shrink-0" />
+            <p className="text-white text-sm font-medium">Warming up AI tracker…</p>
           </div>
         </div>
       )}
