@@ -28,10 +28,13 @@ class KalmanFilter1D {
 }
 
 // 33 landmarks × 4 channels (x,y,z,vis)
+// Arm joints (11-16) get higher Q so fast dance moves track without lag
 const NUM_LANDMARKS = 33;
-const kFilters: KalmanFilter1D[][] = Array.from({ length: NUM_LANDMARKS }, () =>
-  [new KalmanFilter1D(), new KalmanFilter1D(), new KalmanFilter1D(0.01, 0.08), new KalmanFilter1D(0.005, 0.05)]
-);
+const ARM_JOINTS = new Set([11, 12, 13, 14, 15, 16]);
+const kFilters: KalmanFilter1D[][] = Array.from({ length: NUM_LANDMARKS }, (_, i) => {
+  const q = ARM_JOINTS.has(i) ? 0.025 : 0.008; // ponytail: 3x more responsive for arms
+  return [new KalmanFilter1D(q), new KalmanFilter1D(q), new KalmanFilter1D(0.01, 0.08), new KalmanFilter1D(0.005, 0.05)];
+});
 
 function applyKalman(landmarks: any[]): any[] {
   return landmarks.map((lm, i) => {
