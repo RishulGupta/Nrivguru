@@ -87,7 +87,7 @@ export default function RoutineDetail() {
             Practice Segments
           </h2>
           <button 
-            onClick={() => navigate(`/warmup/${routine.id}/full`)}
+            onClick={() => navigate(`/practice/${routine.id}/full`, { state: { mode: 'full_body', skipModeSelector: true } })}
             className="bg-white text-black hover:bg-gray-200 font-semibold px-6 py-2 rounded-xl transition-all flex items-center gap-2"
           >
             <Play className="w-4 h-4 fill-current" />
@@ -100,7 +100,7 @@ export default function RoutineDetail() {
             <div 
               key={chunk.id} 
               className="glass p-6 rounded-2xl border border-white/5 hover:border-primary/50 transition-all flex items-center justify-between group cursor-pointer"
-              onClick={() => navigate(`/warmup/${routine.id}/${chunk.id}`)}
+              onClick={() => navigate(`/segment-phases/${routine.id}/${chunk.id || chunk.chunk_index}`)}
             >
               <div className="flex items-center gap-6">
                 <div className="w-12 h-12 bg-white/5 rounded-xl flex items-center justify-center font-outfit font-bold text-xl text-muted-foreground group-hover:text-primary group-hover:bg-primary/10 transition-colors">

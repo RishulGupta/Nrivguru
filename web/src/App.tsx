@@ -16,6 +16,7 @@ import History from './pages/History';
 import InstructorPortal from './pages/InstructorPortal';
 import Settings from './pages/Settings';
 import WarmUp from './pages/WarmUp';
+import SegmentPhases from './pages/SegmentPhases';
 
 // Route Guards
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
@@ -152,6 +153,12 @@ function App() {
         <Route path="/warmup/:id/:chunkId" element={
           <ProtectedRoute>
             <WarmUp />
+          </ProtectedRoute>
+        } />
+
+        <Route path="/segment-phases/:routineId/:chunkId" element={
+          <ProtectedRoute>
+            <SegmentPhases />
           </ProtectedRoute>
         } />
 
