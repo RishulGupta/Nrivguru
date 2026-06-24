@@ -172,9 +172,10 @@ export default function Practice() {
   const navigate = useNavigate();
   const session = useAuthStore(s => s.session);
 
-  const webcamRef = useRef<HTMLVideoElement>(null);
-  const refVideoRef = useRef<HTMLVideoElement>(null);
-  const cameraStreamRef = useRef<MediaStream | null>(null);
+  const webcamRef          = useRef<HTMLVideoElement>(null); // persistent, always in DOM
+  const practiceWebcamRef  = useRef<HTMLVideoElement>(null); // split-screen right panel
+  const refVideoRef        = useRef<HTMLVideoElement>(null);
+  const cameraStreamRef    = useRef<MediaStream | null>(null);
 
   const [hasWebcam, setHasWebcam] = useState(false);
   const [webcamError, setWebcamError] = useState('');
@@ -262,6 +263,17 @@ export default function Practice() {
     } catch {}
     correctionEngine.current = ce;
   }, [styleConfig]);
+
+  // ── Sync camera stream to split-screen video element when entering practice ──
+  useEffect(() => {
+    if (!isPractice) return;
+    const v = practiceWebcamRef.current;
+    const stream = cameraStreamRef.current;
+    if (v && stream) {
+      v.srcObject = stream;
+      v.play().catch(() => {});
+    }
+  }, [isPractice]);
 
   // ── Pre-move audio ticks (fires 500ms before each velocity onset in reference) ──
   const onsetTimesRef = useRef<number[]>([]);
@@ -981,6 +993,17 @@ export default function Practice() {
   return (
     <div className="h-dvh bg-black flex flex-col overflow-hidden">
 
+      {/* ── Persistent camera video (always in DOM so src stays alive) ── */}
+      {/* Shown fullscreen during non-practice phases (watch, teach, prep) */}
+      <video
+        ref={webcamRef}
+        className={`${
+          isPractice ? 'hidden' : 'fixed inset-0 w-full h-full object-cover z-0'
+        } ${isMirrorMode ? 'scale-x-[-1]' : ''}`}
+        playsInline
+        muted
+      />
+
       {/* ── Cold start overlay — show camera behind, warm-up message on top ── */}
       {/* ponytail: camera shows immediately; only AI tracker message, no spinner blocking view */}
       {!isWorkerReady && (
@@ -999,7 +1022,6 @@ export default function Practice() {
           onCancel={handlePrevPhase}
           playbackRate={effectivePlaybackRate}
           phaseLabel={phaseLabel}
-          webcamRef={webcamRef}
           userLandmarks={userPose}
         />
       )}
@@ -1161,108 +1183,140 @@ export default function Practice() {
           )}
         </header>
 
-      {/* ── Main area: fullscreen camera + PiP reference ── */}
-      <div className="flex-1 min-h-0 relative">
+      {/* ── Main area ── */}
+      <div className="flex-1 min-h-0 flex flex-col lg:flex-row overflow-hidden">
 
-        {/* Fullscreen user camera */}
-        <video
-          ref={webcamRef}
-          className={`absolute inset-0 w-full h-full object-cover ${isMirrorMode ? 'scale-x-[-1]' : ''}`}
-          playsInline
-          muted
-        />
-
-        {/* No camera prompt */}
-        {!hasWebcam && (
-          <div className="absolute inset-0 z-20 bg-black flex flex-col items-center justify-center gap-4">
-            <Camera className="w-16 h-16 text-white/40" />
-            <p className="text-white font-semibold">{webcamError || '📷 Allow camera access'}</p>
-            <button
-              onClick={handleRetryCamera}
-              disabled={retryingCam}
-              className="bg-primary hover:bg-primary/90 text-white font-bold px-6 py-3 rounded-xl transition-all"
-            >
-              {retryingCam ? '⏳' : '📷 Start Camera'}
-            </button>
-          </div>
-        )}
-
-        {/* Skeleton overlay — both user and ref landmarks are in the same coordinate space */}
-        {/* ponytail: mirror via CSS on user landmarks, mirror ref landmarks in JS to match */}
-        <div className={`absolute inset-0 pointer-events-none ${isMirrorMode ? 'scale-x-[-1]' : ''}`}>
-          {userPose && (
-            <SkeletonCanvas
-              landmarks={userPose}
-              refLandmarks={isMirrorMode && currentRefPose
-                ? currentRefPose.map(lm => ({ ...lm, x: 1 - lm.x }))
-                : currentRefPose}
-              focusArea={phase as any}
-              showArrows={false}
-              width={640}
-              height={480}
-              jointScores={jointScores.length > 0 ? Object.fromEntries(jointScores.map(j => [JOINT_NAME_TO_IDX[j.name] ?? j.name, j.score])) as any : undefined}
+        {/* ── WATCH phase: reference video fullscreen ── */}
+        {phase === 'watch' && (
+          <div className="flex-1 relative bg-black">
+            <video
+              ref={refVideoRef}
+              className="absolute inset-0 w-full h-full object-contain"
+              muted
+              playsInline
             />
-          )}
-        </div>
-
-        {/* Reference video: fullscreen during watch, PiP during practice */}
-        <div className={
-          phase === 'watch'
-            ? 'absolute inset-0 z-10 bg-black'
-            : isPractice
-              ? 'absolute top-16 left-3 z-20 w-[28%] max-w-[140px] rounded-xl overflow-hidden border border-white/20 shadow-2xl bg-black'
-              : 'hidden'
-        }>
-          <video
-            ref={refVideoRef}
-            className={phase === 'watch' ? 'w-full h-full object-contain' : 'w-full aspect-video object-contain bg-black'}
-            muted
-            playsInline
-          />
-          {videoError && (
-            <div className="absolute inset-0 flex items-center justify-center bg-black/80">
-              <p className="text-red-400 text-[10px] text-center px-2">{videoError}</p>
-            </div>
-          )}
-          {isPractice && !videoError && (
-            <div className="absolute bottom-1 right-1 bg-black/60 text-white/70 text-[9px] px-1.5 py-0.5 rounded-md">
-              {effectivePlaybackRate === 0.5 ? '½×' : effectivePlaybackRate === 0.75 ? '¾×' : '1×'}
-            </div>
-          )}
-        </div>
-
-        {/* Chunk progress bar — thin line at very top */}
-        {isPractice && !attemptComplete && (
-          <ChunkProgressBar
-            startMs={chunk?.start_time_ms ?? 0}
-            endMs={chunk?.end_time_ms ?? 0}
-            videoRef={refVideoRef}
-          />
-        )}
-
-        {/* Ambient score indicator — coloured dot, no numbers */}
-        {isPractice && !attemptComplete && (
-          <div className="absolute bottom-6 right-5 z-30">
-            <AmbientScore armScore={currentArmScore} />
-          </div>
-        )}
-
-        {/* "Nice!" flash when doing great */}
-        {showChime && (
-          <div className="absolute top-20 left-1/2 -translate-x-1/2 z-30 animate-in zoom-in duration-200">
-            <div className="bg-green-500/30 border border-green-400/50 backdrop-blur-md px-5 py-2 rounded-full">
-              <p className="text-green-300 font-bold text-base">✨ Keep going!</p>
+            {videoError && (
+              <div className="absolute inset-0 flex items-center justify-center bg-black/80">
+                <p className="text-red-400 text-sm">{videoError}</p>
+              </div>
+            )}
+            {/* Speed badge */}
+            <div className="absolute top-3 right-3 bg-black/50 text-white/50 text-xs px-2 py-1 rounded-lg">
+              {effectivePlaybackRate < 1 ? `${effectivePlaybackRate}×` : 'Full speed'}
             </div>
           </div>
         )}
 
-        {/* Visibility warning — minimal, self-dismissing */}
-        {visibleWarning && (
-          <div className="absolute bottom-20 left-1/2 -translate-x-1/2 z-30 pointer-events-none">
-            <div className="bg-yellow-500/20 border border-yellow-500/30 backdrop-blur-md px-4 py-2 rounded-full text-center">
-              <p className="text-yellow-300 text-sm font-medium">Step back — show your shoulders</p>
+        {/* ── PRACTICE phase: LEFT = reference video, RIGHT = user camera ── */}
+        {isPractice && (
+          <>
+            {/* Left: Reference video */}
+            <div className="flex-1 relative bg-gray-950 border-r border-white/5 overflow-hidden">
+              <video
+                ref={refVideoRef}
+                className="absolute inset-0 w-full h-full object-contain"
+                muted
+                playsInline
+              />
+              {videoError && (
+                <div className="absolute inset-0 flex items-center justify-center bg-black/80">
+                  <p className="text-red-400 text-xs text-center px-2">{videoError}</p>
+                </div>
+              )}
+              {/* Speed badge */}
+              <div className="absolute top-2 left-2 bg-black/50 text-white/40 text-[10px] px-2 py-0.5 rounded-md">
+                {effectivePlaybackRate === 0.5 ? '½×' : effectivePlaybackRate === 0.75 ? '¾×' : '1×'}
+              </div>
+              {/* "Reference" label */}
+              <div className="absolute top-2 right-2 bg-black/40 text-white/30 text-[10px] px-2 py-0.5 rounded-md">
+                Reference
+              </div>
+              {/* Progress bar on bottom edge */}
+              <ChunkProgressBar
+                startMs={chunk?.start_time_ms ?? 0}
+                endMs={chunk?.end_time_ms ?? 0}
+                videoRef={refVideoRef}
+              />
             </div>
-          </div>
+
+            {/* Right: User camera (uses practiceWebcamRef — separate from persistent webcamRef) */}
+            <div className="flex-1 relative bg-black overflow-hidden">
+              <video
+                ref={practiceWebcamRef}
+                className={`absolute inset-0 w-full h-full object-cover ${isMirrorMode ? 'scale-x-[-1]' : ''}`}
+                playsInline
+                muted
+              />
+
+              {/* "You" label */}
+              <div className="absolute top-2 left-2 z-10 bg-black/40 text-white/30 text-[10px] px-2 py-0.5 rounded-md">
+                You
+              </div>
+
+              {!hasWebcam && (
+                <div className="absolute inset-0 z-20 bg-black flex flex-col items-center justify-center gap-4">
+                  <Camera className="w-12 h-12 text-white/40" />
+                  <p className="text-white text-sm">{webcamError || '📷 Allow camera access'}</p>
+                  <button
+                    onClick={handleRetryCamera}
+                    disabled={retryingCam}
+                    className="bg-primary hover:bg-primary/90 text-white font-bold px-5 py-2 rounded-xl transition-all text-sm"
+                  >
+                    {retryingCam ? '⏳' : '📷 Start Camera'}
+                  </button>
+                </div>
+              )}
+
+              {/* Skeleton overlay */}
+              <div className={`absolute inset-0 pointer-events-none ${isMirrorMode ? 'scale-x-[-1]' : ''}`}>
+                {userPose && (
+                  <SkeletonCanvas
+                    landmarks={userPose}
+                    refLandmarks={isMirrorMode && currentRefPose
+                      ? currentRefPose.map(lm => ({ ...lm, x: 1 - lm.x }))
+                      : currentRefPose}
+                    focusArea={phase as any}
+                    showArrows={false}
+                    width={640}
+                    height={480}
+                    jointScores={jointScores.length > 0
+                      ? Object.fromEntries(jointScores.map(j => [JOINT_NAME_TO_IDX[j.name] ?? j.name, j.score])) as any
+                      : undefined}
+                  />
+                )}
+              </div>
+
+              {/* Ambient score indicator */}
+              {!attemptComplete && (
+                <div className="absolute bottom-4 right-4 z-30">
+                  <AmbientScore armScore={currentArmScore} />
+                </div>
+              )}
+
+              {/* "Nice!" flash */}
+              {showChime && (
+                <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-30 animate-in zoom-in duration-200 pointer-events-none">
+                  <div className="bg-green-500/30 border border-green-400/50 backdrop-blur-md px-5 py-2 rounded-full">
+                    <p className="text-green-300 font-bold">✨ Keep going!</p>
+                  </div>
+                </div>
+              )}
+
+              {/* Visibility warning */}
+              {visibleWarning && (
+                <div className="absolute bottom-12 left-1/2 -translate-x-1/2 z-30 pointer-events-none">
+                  <div className="bg-yellow-500/20 border border-yellow-500/30 backdrop-blur-md px-4 py-1.5 rounded-full">
+                    <p className="text-yellow-300 text-xs font-medium">Step back — show your shoulders</p>
+                  </div>
+                </div>
+              )}
+            </div>
+          </>
+        )}
+
+        {/* Hidden video ref (keeps event listeners alive for non-watch/practice phases) */}
+        {!isPractice && phase !== 'watch' && (
+          <video ref={refVideoRef} className="hidden" muted playsInline />
         )}
 
         <BeatIndicator isPlaying={isPractice && !attemptComplete} playbackRate={effectivePlaybackRate} />

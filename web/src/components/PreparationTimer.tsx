@@ -8,8 +8,6 @@ interface PreparationTimerProps {
   playbackRate: number;
   duration?: number; // ponytail: kept for compat but ignored — always 5
   phaseLabel: string;
-  /** Live webcam stream ref so we can show camera behind countdown */
-  webcamRef?: React.RefObject<HTMLVideoElement>;
   /** Current user landmarks — used to gate countdown until shoulders visible */
   userLandmarks?: PoseLandmark[] | null;
   /** First-frame reference landmarks to show target arm position */
@@ -23,7 +21,6 @@ export function PreparationTimer({
   onCancel,
   playbackRate: _playbackRate,
   phaseLabel,
-  webcamRef,
   userLandmarks,
   startPoseLandmarks: _startPoseLandmarks,
 }: PreparationTimerProps) {
@@ -82,18 +79,8 @@ export function PreparationTimer({
 
   return (
     <div className="fixed inset-0 z-[100] overflow-hidden">
-      {/* Camera feed behind everything */}
-      {webcamRef?.current && (
-        <video
-          ref={webcamRef}
-          className="absolute inset-0 w-full h-full object-cover scale-x-[-1]"
-          playsInline
-          muted
-        />
-      )}
-
-      {/* Dark overlay */}
-      <div className="absolute inset-0 bg-black/60" />
+      {/* Dark overlay — camera is rendered by Practice.tsx behind this fixed overlay */}
+      <div className="absolute inset-0 bg-black/70" />
 
       {/* Body detection prompt */}
       {!bodyDetected && (
