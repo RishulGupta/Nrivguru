@@ -205,12 +205,15 @@ async function processNextFrame() {
     }
 
     // ── Body presence check ──────────────────────────────────────────────────
-    const keyIdxs = [0, 11, 12, 23, 24];
-    const avgVis  = keyIdxs.reduce((s, i) => s + (rawLandmarks[i]?.visibility ?? 0), 0) / keyIdxs.length;
-    const torsoH  = Math.abs((rawLandmarks[11]?.y ?? 0) - (rawLandmarks[23]?.y ?? 0));
-    const shW     = Math.abs((rawLandmarks[11]?.x ?? 0) - (rawLandmarks[12]?.x ?? 0));
+    // ponytail: arms mode only needs shoulders visible; nose excluded (tilt hides it)
+    const shoulderVis = Math.min(
+      rawLandmarks[11]?.visibility ?? 0,
+      rawLandmarks[12]?.visibility ?? 0,
+    );
+    const torsoH = Math.abs((rawLandmarks[11]?.y ?? 0) - (rawLandmarks[23]?.y ?? 0));
+    const shW    = Math.abs((rawLandmarks[11]?.x ?? 0) - (rawLandmarks[12]?.x ?? 0));
 
-    if (avgVis < 0.45 || (torsoH < 0.10 && shW < 0.12)) {
+    if (shoulderVis < 0.35 || (torsoH < 0.06 && shW < 0.08)) {
       self.postMessage({ type: 'LOW_VISIBILITY' });
       processNextFrame();
       return;
