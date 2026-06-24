@@ -3,6 +3,15 @@ import type { FinalScore } from '@taal/shared/types/routine';
 import type { PoseFrame } from '@taal/shared/types/pose';
 import SkeletonCanvas from './SkeletonCanvas';
 
+const JOINT_NAME_TO_IDX: Record<string, number> = {
+  left_shoulder: 11, right_shoulder: 12,
+  left_elbow: 13,    right_elbow: 14,
+  left_wrist: 15,    right_wrist: 16,
+  left_hip: 23,      right_hip: 24,
+  left_knee: 25,     right_knee: 26,
+  left_ankle: 27,    right_ankle: 28,
+};
+
 interface ImprovementPhaseProps {
   finalScore: FinalScore;
   referencePoses: PoseFrame[];
@@ -10,7 +19,7 @@ interface ImprovementPhaseProps {
   jointScores: any[];
   chunkIndex: number;
   totalChunks: number;
-  /** Called to retry the combined phase */
+  /** Called to retry the current phase */
   onRetry: () => void;
   /** Called to proceed to next chunk */
   onNextChunk: () => void;
@@ -18,6 +27,10 @@ interface ImprovementPhaseProps {
   onPrevChunk?: () => void;
   /** Called to finish the session */
   onFinishSession: () => void;
+  /** Custom label for retry button */
+  retryLabel?: string;
+  /** Custom label for next button */
+  nextLabel?: string;
 }
 
 type AdviceType = 'stiff' | 'offbeat' | 'posture' | 'asymmetric' | 'general';
@@ -113,7 +126,9 @@ export function ImprovementPhase({
   onRetry,
   onNextChunk,
   onPrevChunk,
-  onFinishSession
+  onFinishSession,
+  retryLabel = '🔄 Try combined again',
+  nextLabel
 }: ImprovementPhaseProps) {
   const [proprioAnswer, setProprioAnswer] = useState<'yes' | 'no' | null>(null);
   const isLastChunk = chunkIndex >= totalChunks - 1;
@@ -138,10 +153,10 @@ export function ImprovementPhase({
         {/* ── Header ── */}
         <div className="text-center space-y-2">
           <p className="text-white/50 text-sm uppercase tracking-[0.2em]">
-            Step 6 — AI Coach
+            {nextLabel ? '💪 Upper Body — Review' : 'Step 6 — AI Coach'}
           </p>
           <h2 className="text-3xl font-bold text-white">
-            💪 Let's improve
+            {nextLabel ? '💪 How was that?' : '💪 Let\'s improve'}
           </h2>
           <p className="text-gray-400 text-sm">
             Chunk {chunkIndex + 1} of {totalChunks}
@@ -157,7 +172,7 @@ export function ImprovementPhase({
             <div className="text-center">
               <p className="text-2xl mb-1">💪</p>
               <p className="text-green-400 font-bold">{Math.round(finalScore.armScore)}%</p>
-              <p className="text-white/40 text-[10px]">Arms</p>
+              <p className="text-white/40 text-[10px]">Upper Body</p>
             </div>
             <div className="text-center">
               <p className="text-2xl mb-1">🦵</p>
@@ -195,7 +210,7 @@ export function ImprovementPhase({
                   showArrows={true}
                   width={400}
                   height={533}
-                  jointScores={jointScores.length > 0 ? Object.fromEntries(jointScores.map((j: any) => [j.name, j.score])) as any : undefined}
+                  jointScores={jointScores.length > 0 ? Object.fromEntries(jointScores.map((j: any) => [JOINT_NAME_TO_IDX[j.name] ?? j.name, j.score])) as any : undefined}
                 />
               )}
             </div>
@@ -312,7 +327,7 @@ export function ImprovementPhase({
               onClick={onRetry}
               className="flex-1 bg-white/10 hover:bg-white/20 text-white font-bold py-3 rounded-xl transition-all text-base"
             >
-              🔄 Try combined again
+              {retryLabel}
             </button>
           )}
           <button
@@ -323,7 +338,7 @@ export function ImprovementPhase({
                 : 'bg-primary hover:bg-primary/90 text-white shadow-[0_0_15px_rgba(147,51,234,0.3)]'
             }`}
           >
-            {isLastChunk ? '✅ Finish session' : '➡️ Next chunk'}
+            {nextLabel ?? (isLastChunk ? '✅ Finish session' : '➡️ Next chunk')}
           </button>
         </div>
       </div>

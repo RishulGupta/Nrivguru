@@ -16,6 +16,8 @@ import { usePoseDetection } from '../hooks/usePoseDetection';
 import { speechManager } from '@taal/shared/utils/SpeechManager';
 import { countingSystem } from '@taal/shared/utils/CountingSystem';
 import { TeachPhase } from '../components/TeachPhase';
+import { PrepTimeSelector } from '../components/PrepTimeSelector';
+import { PracticeModeSelector } from '../components/PracticeModeSelector';
 import { extractKeyframes } from '@taal/shared/utils/KeyframeExtractor';
 import { BeatIndicator } from '../components/BeatIndicator';
 import { TeacherPersonality } from '@taal/shared/utils/TeacherPersonality';
@@ -23,6 +25,16 @@ import { sessionMemory } from '@taal/shared/utils/SessionMemory';
 import { DifficultyScaler } from '@taal/shared/utils/DifficultyScaler';
 import { getStyleConfig } from '@taal/shared/utils/StyleConfig';
 import { getOriginalVideoUrl } from '../utils/videoStore';
+
+// ponytail: vertex joint index for each scored joint name — fixes name→index mismatch
+const JOINT_NAME_TO_IDX: Record<string, number> = {
+  left_shoulder: 11, right_shoulder: 12,
+  left_elbow: 13,    right_elbow: 14,
+  left_wrist: 15,    right_wrist: 16,
+  left_hip: 23,      right_hip: 24,
+  left_knee: 25,     right_knee: 26,
+  left_ankle: 27,    right_ankle: 28,
+};
 
 export default function Practice() {
   const { id, chunkId } = useParams();
@@ -46,12 +58,14 @@ export default function Practice() {
   // ── Chunk loop ──
   const [currentChunkIndex, setCurrentChunkIndex] = useState(0);
   const [showWarmUpPrompt, setShowWarmUpPrompt] = useState(false);
+  const [showModeSelector, setShowModeSelector] = useState(true);
 
   // ── State machine ──
   const {
     phase,
     attemptCount: _attemptCount,
     isSeatedMode,
+    mode,
     playbackRate,
     focusArea,
     isPreparation,
@@ -74,7 +88,8 @@ export default function Practice() {
     loadReference,
     processFrame,
     finishAttempt,
-    clearUserStopped
+    clearUserStopped,
+    captureReferenceFrame
   } = usePoseDetection();
 
   const [finalScore, setFinalScore] = useState<FinalScore | null>(null);
@@ -82,6 +97,14 @@ export default function Practice() {
   const [referencePoses, setReferencePoses] = useState<PoseFrame[]>([]);
   const [keyframes, setKeyframes] = useState<PoseFrame[]>([]);
   const [showImprovement, setShowImprovement] = useState(false);
+  const [showWatchOverlay, setShowWatchOverlay] = useState(false);
+  const [prepTime, setPrepTime] = useState(() => {
+    const stored = sessionStorage.getItem('taal-prep-time');
+    return stored ? Number(stored) : 6;
+  });
+  const [hasChosenPrepTime, setHasChosenPrepTime] = useState(() => {
+    return !!sessionStorage.getItem('taal-prep-time');
+  });
 
   // ── Modules ──
   const difficultyScaler = useRef(new DifficultyScaler()).current;
@@ -127,9 +150,9 @@ export default function Practice() {
     if (phase === 'watch') {
       speechManager.speak("Watch the full routine. Notice the arm and leg positions.", "normal");
     } else if (phase === 'prep_arms') {
-      speechManager.speak("Now practice just the arms. Follow the video at half speed.", "normal");
+      // PrepTimeSelector handles its own speech
     } else if (phase === 'arms') {
-      // Practice started after prep timer
+      speechManager.speak("Focus on your upper body at half speed. You've got this!", "praise");
     } else if (phase === 'prep_legs') {
       speechManager.speak("Now practice just the legs. Focus on matching foot and knee positions.", "normal");
     } else if (phase === 'prep_combine') {
@@ -174,11 +197,14 @@ export default function Practice() {
     setAttemptComplete(false);
     setFinalScore(null);
     setShowImprovement(false);
+    setShowWatchOverlay(false);
     setProprioQuestion(null);
+    setPrepTime(6);
+    setHasChosenPrepTime(false);
     lastBreathingCueIndex.current = -1;
 
     // Load pre-extracted poses
-    if (c?.pose_slice_json) {
+    if (c?.pose_slice_json && Array.isArray(c.pose_slice_json) && c.pose_slice_json.length > 0) {
       try {
         const poses = typeof c.pose_slice_json === 'string'
           ? JSON.parse(c.pose_slice_json)
@@ -189,6 +215,12 @@ export default function Practice() {
       } catch (e) {
         console.error("Failed to parse pose_slice_json", e);
       }
+    } else {
+      // No pose data — skip teach phase, user will watch video instead
+      setReferencePoses([]);
+      setKeyframes([]);
+      loadReference([]);
+      console.warn("No pose_slice_json for chunk", idx);
     }
 
     // Start chunk in state machine
@@ -215,52 +247,56 @@ export default function Practice() {
         setRoutine(data);
         const chunks = data.chunks || [];
         setAllChunks(chunks);
-
-        // Determine starting chunk
-        let startIdx = 0;
-        if (chunkId && chunkId !== 'full') {
-          const found = chunks.findIndex(
-            (ch: Chunk) => ch.id === chunkId || String(ch.chunk_index) === chunkId
-          );
-          if (found >= 0) startIdx = found;
-        }
-        switchToChunk(chunks, startIdx);
       }
       setLoadingData(false);
     }
     loadRoutine();
-  }, [id, chunkId, session, switchToChunk]);
+  }, [id, chunkId, session]);
 
-  // ── Camera setup (only once warm-up prompt is dismissed) ──
+  // ── Start first chunk after mode is selected and data is loaded ──
+  const startedRef = useRef(false);
   useEffect(() => {
-    if (showWarmUpPrompt) return;
-    let active = true;
-    async function setup() {
-      if (!webcamRef.current) return;
-      try {
-        const stream = await navigator.mediaDevices.getUserMedia({
-          video: { width: 640, height: 480, facingMode: 'user' },
-          audio: false,
-        });
-        cameraStreamRef.current = stream;
-        if (webcamRef.current && active) {
-          webcamRef.current.srcObject = stream;
-          await webcamRef.current.play();
-          setHasWebcam(true);
-        }
-      } catch {
-        setWebcamError('Could not access webcam. Please allow camera permissions.');
-      }
+    if (showModeSelector || loadingData || !_allChunks.length || startedRef.current) return;
+    startedRef.current = true;
+    let startIdx = 0;
+    if (chunkId && chunkId !== 'full') {
+      const found = _allChunks.findIndex(
+        (ch: Chunk) => ch.id === chunkId || String(ch.chunk_index) === chunkId
+      );
+      if (found >= 0) startIdx = found;
     }
-    setup();
-    return () => {
-      active = false;
-      if (cameraStreamRef.current) {
-        cameraStreamRef.current.getTracks().forEach(t => t.stop());
-        cameraStreamRef.current = null;
+    switchToChunk(_allChunks, startIdx);
+  }, [showModeSelector, loadingData, _allChunks, chunkId, switchToChunk]);
+
+  // ── Camera setup (extracted so mode selector can trigger it) ──
+  const setupCamera = useCallback(async () => {
+    if (!webcamRef.current) return;
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { width: 640, height: 480, facingMode: 'user' },
+        audio: false,
+      });
+      cameraStreamRef.current = stream;
+      if (webcamRef.current) {
+        webcamRef.current.srcObject = stream;
+        await webcamRef.current.play();
+        setHasWebcam(true);
       }
-    };
-  }, [showWarmUpPrompt]);
+    } catch {
+      setWebcamError('Could not access webcam. Please allow camera permissions.');
+    }
+  }, []);
+
+  // ── Camera init when warm-up/mode-selector dismissed ──
+  useEffect(() => {
+    if (showWarmUpPrompt || showModeSelector) return;
+    let active = true;
+    (async () => {
+      if (!active) return;
+      await setupCamera();
+    })();
+    return () => { active = false; };
+  }, [showWarmUpPrompt, showModeSelector, setupCamera]);
 
   // ── Effective playback rate (uses DifficultyScaler for full speed) ──
   const effectivePlaybackRate = phase === 'full'
@@ -293,8 +329,17 @@ export default function Practice() {
     const onLoadedMetadata = () => {
       v.currentTime = startMs / 1000;
 
-      if (isPractice && !attemptComplete && !pendingAdjustment) {
-        v.play().catch(e => console.warn("Auto-play prevented", e));
+      const doPlay = () => {
+        v.play().then(() => {
+          // Must set playbackRate AFTER play() starts — browser resets it otherwise
+          v.playbackRate = effectivePlaybackRate;
+        }).catch(e => console.warn("Auto-play prevented", e));
+      };
+
+      if (phase === 'watch') {
+        doPlay();
+      } else if (isPractice && !attemptComplete && !pendingAdjustment) {
+        doPlay();
         if (endMs > startMs) countingSystem.start(endMs - startMs, effectivePlaybackRate);
       }
     };
@@ -320,16 +365,21 @@ export default function Practice() {
         countingSystem.stop();
 
         if (phase === 'watch') {
-          sendSessionEvent({ type: 'PHASE_COMPLETE' });
+          setShowWatchOverlay(true);
         } else if (isPractice) {
           handleScoredAttemptFinished();
         }
       }
     };
 
-    v.addEventListener('loadedmetadata', onLoadedMetadata, { once: true });
+    v.addEventListener('loadedmetadata', onLoadedMetadata);
     v.addEventListener('timeupdate', onTimeUpdate);
     v.load();
+
+    // Fallback: if already loaded (cached), fire handler directly
+    if (v.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
+      onLoadedMetadata();
+    }
 
     return () => {
       v.removeEventListener('loadedmetadata', onLoadedMetadata);
@@ -374,6 +424,33 @@ export default function Practice() {
     }
     return () => cancelAnimationFrame(animationId);
   }, [isWorkerReady, hasWebcam, phase, isPractice, focusArea, processFrame, attemptComplete, pendingAdjustment]);
+
+  // ── Live reference capture from video during watch (when no pre-extracted poses) ──
+  const captureFrameCount = useRef(0);
+  useEffect(() => {
+    if (phase !== 'watch' || referencePoses.length > 0 || !isWorkerReady) return;
+    const v = refVideoRef.current;
+    if (!v) return;
+
+    captureFrameCount.current = 0;
+    let animId: number;
+
+    const capture = () => {
+      if (v!.paused || v!.ended) {
+        animId = requestAnimationFrame(capture);
+        return;
+      }
+      captureFrameCount.current++;
+      // Sample at ~3fps (every 10th frame at 30fps)
+      if (captureFrameCount.current % 10 === 0) {
+        captureReferenceFrame(v!, v!.currentTime * 1000);
+      }
+      animId = requestAnimationFrame(capture);
+    };
+    animId = requestAnimationFrame(capture);
+
+    return () => cancelAnimationFrame(animId);
+  }, [phase, referencePoses.length, isWorkerReady, captureReferenceFrame]);
 
   // ── Green score chime ──
   const consecutiveGreenFrames = useRef(0);
@@ -481,10 +558,14 @@ export default function Practice() {
       });
     }
 
-    // Show improvement phase automatically after combine/full
+    // Show improvement phase automatically after practice phases
     if (phase === 'combine' || phase === 'full') {
       setTimeout(() => {
         sendSessionEvent({ type: 'GO_TO_IMPROVEMENT' });
+        setShowImprovement(true);
+      }, 500);
+    } else if (phase === 'arms') {
+      setTimeout(() => {
         setShowImprovement(true);
       }, 500);
     }
@@ -496,6 +577,10 @@ export default function Practice() {
   }, [sendSessionEvent]);
 
   // ── Dynamic navigation ──
+  const handleTeachComplete = useCallback(() => {
+    sendSessionEvent({ type: 'PHASE_COMPLETE' });
+  }, [sendSessionEvent]);
+
   const handleNextPhase = () => {
     setAttemptComplete(false);
     setFinalScore(null);
@@ -596,10 +681,28 @@ export default function Practice() {
 
   // ── View constants ──
   const totalChunks = _allChunks.length || 1;
+  const isLastChunk = currentChunkIndex >= totalChunks - 1;
   const hasAllChunks = _allChunks.length > 0;
 
   // ── Warm-up prompt (only before first segment) ──
   const [showSkipConfirm, setShowSkipConfirm] = useState(false);
+
+  // ── Practice mode selector (after warm-up, before practice) ──
+  if (showModeSelector && !showWarmUpPrompt) {
+    return (
+      <div className="min-h-screen bg-black flex flex-col items-center justify-center p-6">
+        <PracticeModeSelector
+          onSelect={(selectedMode) => {
+            sendSessionEvent({ type: 'SET_MODE', mode: selectedMode });
+            setShowModeSelector(false);
+            // Camera setup + start practice
+            setupCamera();
+          }}
+          onCancel={() => setShowWarmUpPrompt(true)}
+        />
+      </div>
+    );
+  }
 
   if (showWarmUpPrompt && !loadingData && currentChunkIndex === 0) {
     return (
@@ -619,7 +722,7 @@ export default function Practice() {
                   onClick={() => {
                     setShowSkipConfirm(false);
                     setShowWarmUpPrompt(false);
-                    speechManager.speak("Let's begin the lesson.", "normal");
+                    setShowModeSelector(true);
                   }}
                   className="flex-1 py-3 bg-red-500/20 hover:bg-red-500/30 text-red-300 border border-red-500/30 rounded-xl font-medium transition-all text-sm"
                 >
@@ -655,7 +758,7 @@ export default function Practice() {
   }
 
   return (
-    <div className="min-h-screen bg-black flex flex-col relative overflow-hidden">
+    <div className="h-dvh bg-black flex flex-col overflow-hidden">
 
       {/* ── Loading overlay ── */}
       {(loadingData || !isWorkerReady) && (
@@ -668,22 +771,72 @@ export default function Practice() {
         </div>
       )}
 
-      {/* ── Preparation Timer (Step 1) ── */}
-      {isPreparation && (
+      {/* ── Preparation Timer (Step 1) — with prep time selector for arms ── */}
+      {phase === 'prep_arms' && !hasChosenPrepTime && (
+        <PrepTimeSelector
+          onSelect={(sec) => {
+            setPrepTime(sec);
+            setHasChosenPrepTime(true);
+            sessionStorage.setItem('taal-prep-time', String(sec));
+          }}
+          onCancel={handlePrevPhase}
+        />
+      )}
+
+      {isPreparation && !(phase === 'prep_arms' && !hasChosenPrepTime) && (
         <PreparationTimer
           onReady={handlePrepDone}
           onCancel={handlePrevPhase}
           playbackRate={effectivePlaybackRate}
-          duration={6}
+          duration={prepTime}
           phaseLabel={phaseLabel}
         />
+      )}
+
+      {/* ── Watch Again overlay ── */}
+      {phase === 'watch' && showWatchOverlay && (
+        <div className="fixed inset-0 z-40 bg-black/85 backdrop-blur-sm flex items-center justify-center p-8">
+          <div className="bg-white/5 backdrop-blur-xl p-8 rounded-3xl border border-white/10 max-w-sm w-full text-center space-y-6">
+            <p className="text-5xl">👀</p>
+            <h2 className="text-2xl font-bold text-white">Did you get that?</h2>
+            <p className="text-gray-400 text-sm">
+              Watch the upper body movements one more time, or move on when you're ready.
+            </p>
+            <div className="flex flex-col gap-3 pt-2">
+              <button
+                onClick={() => {
+                  const v = refVideoRef.current;
+                  if (v && chunk) {
+                    setShowWatchOverlay(false);
+                    v.currentTime = (chunk.start_time_ms || 0) / 1000;
+                    v.play().then(() => {
+                      v.playbackRate = effectivePlaybackRate;
+                    }).catch(() => {});
+                  }
+                }}
+                className="w-full py-4 bg-white/10 hover:bg-white/20 text-white font-bold rounded-xl transition-all text-lg"
+              >
+                🔄 Watch again
+              </button>
+              <button
+                onClick={() => {
+                  setShowWatchOverlay(false);
+                  sendSessionEvent({ type: 'PHASE_COMPLETE' });
+                }}
+                className="w-full py-4 bg-primary hover:bg-primary/90 text-white font-bold rounded-xl transition-all shadow-[0_0_15px_rgba(147,51,234,0.3)] text-lg"
+              >
+                ➡️ I'm ready
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {/* ── Teach Phase (Step 2) ── */}
       {phase === 'teach' && (
         <TeachPhase
           keyframes={keyframes}
-          onComplete={() => sendSessionEvent({ type: 'PHASE_COMPLETE' })}
+          onComplete={handleTeachComplete}
         />
       )}
 
@@ -700,11 +853,33 @@ export default function Practice() {
             setShowImprovement(false);
             setAttemptComplete(false);
             setFinalScore(null);
-            sendSessionEvent({ type: 'RETURN_TO_PRACTICE' });
+            if (phase === 'arms') {
+              sendSessionEvent({ type: 'RESTART_CHUNK' });
+            } else {
+              sendSessionEvent({ type: 'RETURN_TO_PRACTICE' });
+            }
           }}
-          onNextChunk={nextChunk}
+          onNextChunk={() => {
+            if (phase === 'arms') {
+              // Advance to legs phase within same chunk
+              setShowImprovement(false);
+              setAttemptComplete(false);
+              setFinalScore(null);
+              sendSessionEvent({ type: 'PHASE_COMPLETE' });
+            } else {
+              nextChunk();
+            }
+          }}
           onPrevChunk={currentChunkIndex > 0 ? prevChunk : undefined}
           onFinishSession={handleFinishSession}
+          retryLabel={phase === 'arms' ? '🔄 Try upper body again' : undefined}
+          nextLabel={
+            phase === 'arms'
+              ? isLastChunk
+                ? '✅ Finish session'
+                : '➡️ Next: Legs'
+              : undefined
+          }
         />
       )}
 
@@ -797,8 +972,8 @@ export default function Practice() {
         </header>
 
       {/* ── Main area (hidden via CSS so video refs stay alive) ── */}
-      <div className={`flex-1 flex-col ${showImprovement ? 'hidden' : 'flex'}`}>
-        <main className="flex-1 flex flex-col lg:flex-row w-full h-full relative">
+      <div className={`flex-1 min-h-0 max-h-full ${showImprovement ? 'hidden' : 'flex flex-col'}`}>
+        <main className="flex-1 flex flex-col lg:flex-row w-full min-h-0 relative">
           {/* ── LEFT: Reference video ── */}
           <div className="flex-1 relative bg-gray-900 border-r border-white/10 overflow-hidden">
             <video
@@ -827,7 +1002,7 @@ export default function Practice() {
           </div>
 
           {/* ── RIGHT: User webcam ── */}
-          <div className="flex-1 relative bg-gray-950">
+          <div className="flex-1 relative bg-gray-950 overflow-hidden">
             {!hasWebcam && (
               <div className="absolute inset-0 flex flex-col items-center justify-center z-20 bg-black">
                 <Camera className="w-16 h-16 text-destructive mb-4" />
@@ -842,12 +1017,16 @@ export default function Practice() {
               </div>
             )}
 
-            {/* Visibility warning */}
+            {/* Visibility warning — full body guide */}
             {visibleWarning && !showImprovement && (
-              <div className="absolute inset-x-0 top-1/3 flex justify-center z-30">
-                <div className="bg-yellow-500/20 border border-yellow-500/50 backdrop-blur-md px-4 py-3 rounded-2xl text-center flex items-center gap-3">
-                  <p className="text-yellow-400 font-bold">👀 Step back!</p>
-                  <button onClick={() => setVisibleWarning(false)} className="text-yellow-400/60 hover:text-yellow-400 text-lg">✕</button>
+              <div className="absolute inset-0 flex items-center justify-center z-30 pointer-events-none">
+                <div className="bg-yellow-500/15 border border-yellow-500/30 backdrop-blur-md px-6 py-5 rounded-2xl text-center max-w-xs mx-auto pointer-events-auto">
+                  <p className="text-yellow-400 font-bold text-lg mb-1">👀 Step back</p>
+                  <p className="text-yellow-300/70 text-xs">Make sure your full body is visible — shoulders to feet should be in frame</p>
+                  <div className="mt-3 flex justify-center gap-2 opacity-40">
+                    <span className="text-3xl">🧍</span>
+                  </div>
+                  <button onClick={() => setVisibleWarning(false)} className="mt-2 text-yellow-400/50 hover:text-yellow-400 text-xs font-medium pointer-events-auto">✕ Dismiss</button>
                 </div>
               </div>
             )}
@@ -918,7 +1097,7 @@ export default function Practice() {
                   showArrows={isPractice || !!pendingAdjustment}
                   width={640}
                   height={480}
-                  jointScores={jointScores.length > 0 ? Object.fromEntries(jointScores.map(j => [j.name, j.score])) as any : undefined}
+                  jointScores={jointScores.length > 0 ? Object.fromEntries(jointScores.map(j => [JOINT_NAME_TO_IDX[j.name] ?? j.name, j.score])) as any : undefined}
                 />
               )}
             </div>
