@@ -1,174 +1,363 @@
 import { useEffect, useRef, useState } from 'react';
-import type { PoseFrame } from '@taal/shared/types/pose';
+import type { PoseFrame, PoseLandmark } from '@taal/shared/types/pose';
 import { speechManager } from '@taal/shared/utils/SpeechManager';
+import { ChevronRight, RotateCcw } from 'lucide-react';
 
 interface TeachPhaseProps {
   keyframes: PoseFrame[];
   onComplete: () => void;
+  /** Reference video URL — used as the primary teaching tool */
+  videoSrc?: string;
+  /** Chunk start/end for slicing the video */
+  startMs?: number;
+  endMs?: number;
 }
 
-// Maps keyframe index to a short arm cue
-const ARM_CUES = [
-  'Watch the arm position here',
-  'Notice where the arms go',
-  'Follow the arm movement',
-  'Remember this final shape',
-];
-
-export function TeachPhase({ keyframes, onComplete }: TeachPhaseProps) {
-  const [step, setStep] = useState<'intro' | 'frames' | 'done'>('intro');
-  const [currentIdx, setCurrentIdx] = useState(0);
-  const containerRef = useRef<HTMLDivElement>(null);
-
-  // If no keyframes, skip immediately
-  useEffect(() => {
-    if (keyframes.length === 0) {
-      onComplete();
-    }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  // Intro → frames after 1.5s
-  useEffect(() => {
-    if (step !== 'intro') return;
-    speechManager.speak('Watch the arm positions carefully', 'normal');
-    const t = setTimeout(() => setStep('frames'), 1500);
-    return () => clearTimeout(t);
-  }, [step]);
-
-  // Advance frames automatically
-  useEffect(() => {
-    if (step !== 'frames') return;
-    const cue = ARM_CUES[Math.min(currentIdx, ARM_CUES.length - 1)];
-    speechManager.speak(cue, 'normal');
-
-    const t = setTimeout(() => {
-      if (currentIdx + 1 >= keyframes.length) {
-        setStep('done');
-      } else {
-        setCurrentIdx(i => i + 1);
-      }
-    }, 2200);
-    return () => clearTimeout(t);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [step, currentIdx]);
-
-  // Done → auto-proceed
-  useEffect(() => {
-    if (step !== 'done') return;
-    const t = setTimeout(onComplete, 800);
-    return () => clearTimeout(t);
-  }, [step, onComplete]);
-
-  const totalSteps = keyframes.length;
-  const currentPose = keyframes[currentIdx]?.landmarks;
-  const canvasW = containerRef.current?.clientWidth || 280;
-  const canvasH = containerRef.current?.clientHeight || 400;
-
-  return (
-    <div className="fixed inset-0 z-50 bg-black flex flex-col items-center justify-center gap-6 p-6">
-      {/* Header */}
-      <div className="text-center">
-        <p className="text-white/40 text-xs uppercase tracking-widest mb-1">Study the moves</p>
-        <p className="text-white text-2xl font-bold">Watch the arm positions</p>
-      </div>
-
-      {/* Pose display area — arm silhouette only on neutral bg */}
-      <div
-        ref={containerRef}
-        className="relative w-full max-w-[280px] aspect-[9/16] bg-gray-900/80 rounded-2xl overflow-hidden border border-white/10"
-      >
-        {currentPose && (
-          <ArmOnlyPreview
-            landmarks={currentPose}
-            width={canvasW}
-            height={canvasH}
-          />
-        )}
-
-        {/* Step label */}
-        <div className="absolute bottom-4 left-0 right-0 flex justify-center gap-1.5">
-          {Array.from({ length: totalSteps }, (_, i) => (
-            <div
-              key={i}
-              className={`h-1.5 rounded-full transition-all duration-400 ${
-                i === currentIdx ? 'w-6 bg-violet-400' : 'w-1.5 bg-white/20'
-              }`}
-            />
-          ))}
-        </div>
-      </div>
-
-      {/* Cue text */}
-      <p className="text-white/60 text-sm text-center">
-        {step === 'frames' ? ARM_CUES[Math.min(currentIdx, ARM_CUES.length - 1)] : ''}
-      </p>
-
-      {/* Skip */}
-      <button
-        onClick={onComplete}
-        className="px-6 py-2 bg-white/10 hover:bg-white/20 text-white/70 rounded-full text-sm transition-all"
-      >
-        Skip ⏭
-      </button>
-    </div>
-  );
-}
-
-// Draw only the arm skeleton on a canvas — no full body noise for beginner
-import { useEffect as useE, useRef as useR } from 'react';
-import type { PoseLandmark } from '@taal/shared/types/pose';
-
-function ArmOnlyPreview({ landmarks, width, height }: {
+// ─── Body Diagram ─────────────────────────────────────────────────────────────
+// Draws a clear cartoon-style human figure with highlighted arm positions.
+// Much more recognisable than raw landmark sticks for a beginner.
+function BodyDiagram({
+  landmarks,
+  width,
+  height,
+  label,
+}: {
   landmarks: PoseLandmark[];
   width: number;
   height: number;
+  label?: string;
 }) {
-  const ref = useR<HTMLCanvasElement>(null);
+  const ref = useRef<HTMLCanvasElement>(null);
 
-  useE(() => {
+  useEffect(() => {
     const c = ref.current;
-    if (!c) return;
+    if (!c || width === 0 || height === 0) return;
     const ctx = c.getContext('2d');
     if (!ctx) return;
 
     ctx.clearRect(0, 0, width, height);
-    ctx.lineCap = 'round';
-    ctx.lineJoin = 'round';
 
     const px = (x: number) => x * width;
     const py = (y: number) => y * height;
 
-    const ARM_CONNS: [number, number][] = [
-      [11, 13], [13, 15], [12, 14], [14, 16], [11, 12],
-    ];
+    const lm = landmarks;
+    const vis = (idx: number) => (lm[idx]?.visibility ?? 0) > 0.3;
 
-    // Blue arm lines
-    ctx.strokeStyle = 'rgba(130,180,255,0.9)';
-    ctx.lineWidth = 5;
-    ctx.shadowBlur = 14;
-    ctx.shadowColor = 'rgba(130,180,255,0.5)';
+    // ── Draw full body silhouette first (dark gray background figure) ──────────
+    // We draw a simple cartoon body: head + torso + limbs
+    // then overlay the actual landmark data on top
 
-    for (const [i, j] of ARM_CONNS) {
-      const p1 = landmarks[i], p2 = landmarks[j];
-      if (!p1 || !p2 || (p1.visibility ?? 1) < 0.35 || (p2.visibility ?? 1) < 0.35) continue;
+    // Helper: midpoint
+    const mid = (a: number, b: number, dim: 'x' | 'y') =>
+      ((lm[a]?.[dim] ?? 0.5) + (lm[b]?.[dim] ?? 0.5)) / 2;
+
+    // Body reference points
+    const lSh  = lm[11], rSh  = lm[12];
+    const lEl  = lm[13], rEl  = lm[14];
+    const lWr  = lm[15], rWr  = lm[16];
+    const lHip = lm[23], rHip = lm[24];
+    const lKn  = lm[25], rKn  = lm[26];
+    const lAn  = lm[27], rAn  = lm[28];
+    const nose = lm[0];
+
+    const shCX = mid(11, 12, 'x');
+    const shCY = mid(11, 12, 'y');
+    const hipCX = mid(23, 24, 'x');
+    const hipCY = mid(23, 24, 'y');
+
+    // ── 1. Body silhouette (torso + head + legs) in dark gray ───────────────
+    ctx.save();
+    ctx.strokeStyle = 'rgba(255,255,255,0.15)';
+    ctx.fillStyle   = 'rgba(255,255,255,0.06)';
+    ctx.lineWidth   = 4;
+    ctx.lineCap     = 'round';
+    ctx.lineJoin    = 'round';
+
+    // Torso
+    if (lSh && rSh && lHip && rHip) {
       ctx.beginPath();
-      ctx.moveTo(px(p1.x), py(p1.y));
-      ctx.lineTo(px(p2.x), py(p2.y));
+      ctx.moveTo(px(lSh.x),  py(lSh.y));
+      ctx.lineTo(px(rSh.x),  py(rSh.y));
+      ctx.lineTo(px(rHip.x), py(rHip.y));
+      ctx.lineTo(px(lHip.x), py(lHip.y));
+      ctx.closePath();
+      ctx.fill();
       ctx.stroke();
     }
 
-    // Joint dots
-    ctx.shadowBlur = 0;
-    for (const idx of [11, 12, 13, 14, 15, 16]) {
-      const p = landmarks[idx];
-      if (!p || (p.visibility ?? 1) < 0.35) continue;
-      ctx.fillStyle = '#fff';
+    // Head (circle around nose)
+    if (nose) {
+      const headR = Math.abs((lSh?.y ?? shCY) - (nose?.y ?? shCY)) * height * 0.45;
       ctx.beginPath();
-      ctx.arc(px(p.x), py(p.y), 4, 0, Math.PI * 2);
-      ctx.fill();
+      ctx.arc(px(nose.x), py(nose.y), Math.max(headR, 12), 0, Math.PI * 2);
+      ctx.stroke();
     }
-  }, [landmarks, width, height]);
 
-  return <canvas ref={ref} width={width} height={height} className="absolute inset-0 w-full h-full" />;
+    // Legs (subtle)
+    for (const [a, b] of [[23, 25], [25, 27], [24, 26], [26, 28]] as [number, number][]) {
+      if (!lm[a] || !lm[b]) continue;
+      ctx.beginPath();
+      ctx.moveTo(px(lm[a].x), py(lm[a].y));
+      ctx.lineTo(px(lm[b].x), py(lm[b].y));
+      ctx.stroke();
+    }
+    ctx.restore();
+
+    // ── 2. Arms — bright, thick, prominent ──────────────────────────────────
+    ctx.save();
+    ctx.lineCap = 'round';
+
+    const ARM_SEGMENTS: [number, number, string][] = [
+      [11, 13, 'left'],   // L upper arm
+      [13, 15, 'left'],   // L forearm
+      [12, 14, 'right'],  // R upper arm
+      [14, 16, 'right'],  // R forearm
+    ];
+
+    for (const [i, j, side] of ARM_SEGMENTS) {
+      if (!lm[i] || !lm[j]) continue;
+      if (!vis(i) || !vis(j)) continue;
+
+      const color = side === 'left' ? '#a78bfa' : '#34d399'; // purple=left, green=right
+      const glow  = side === 'left' ? 'rgba(167,139,250,0.4)' : 'rgba(52,211,153,0.4)';
+
+      // Glow layer
+      ctx.shadowBlur   = 18;
+      ctx.shadowColor  = glow;
+      ctx.strokeStyle  = color;
+      ctx.lineWidth    = 10;
+      ctx.globalAlpha  = 0.5;
+      ctx.beginPath();
+      ctx.moveTo(px(lm[i].x), py(lm[i].y));
+      ctx.lineTo(px(lm[j].x), py(lm[j].y));
+      ctx.stroke();
+
+      // Solid layer
+      ctx.shadowBlur  = 0;
+      ctx.globalAlpha = 1;
+      ctx.lineWidth   = 6;
+      ctx.beginPath();
+      ctx.moveTo(px(lm[i].x), py(lm[i].y));
+      ctx.lineTo(px(lm[j].x), py(lm[j].y));
+      ctx.stroke();
+    }
+
+    // ── 3. Joint dots on arms ───────────────────────────────────────────────
+    const ARM_JOINTS: [number, string][] = [
+      [11, '#a78bfa'], [13, '#a78bfa'], [15, '#a78bfa'],
+      [12, '#34d399'], [14, '#34d399'], [16, '#34d399'],
+    ];
+    for (const [idx, color] of ARM_JOINTS) {
+      const p = lm[idx];
+      if (!p || !vis(idx)) continue;
+      ctx.shadowBlur  = 10;
+      ctx.shadowColor = color;
+      ctx.fillStyle   = '#fff';
+      ctx.beginPath();
+      ctx.arc(px(p.x), py(p.y), 5, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.shadowBlur = 0;
+    }
+
+    // ── 4. Labels: LEFT / RIGHT on shoulders ───────────────────────────────
+    if (lSh && vis(11)) {
+      ctx.fillStyle   = '#a78bfa';
+      ctx.font        = `bold ${Math.round(width * 0.04)}px sans-serif`;
+      ctx.textAlign   = 'center';
+      ctx.globalAlpha = 0.9;
+      ctx.fillText('LEFT', px(lSh.x), py(lSh.y) - 14);
+    }
+    if (rSh && vis(12)) {
+      ctx.fillStyle   = '#34d399';
+      ctx.font        = `bold ${Math.round(width * 0.04)}px sans-serif`;
+      ctx.textAlign   = 'center';
+      ctx.globalAlpha = 0.9;
+      ctx.fillText('RIGHT', px(rSh.x), py(rSh.y) - 14);
+    }
+
+    ctx.restore();
+
+    // ── 5. Step label overlay ───────────────────────────────────────────────
+    if (label) {
+      ctx.save();
+      ctx.fillStyle   = 'rgba(0,0,0,0.55)';
+      ctx.roundRect?.(12, height - 42, label.length * 8 + 20, 30, 8);
+      ctx.fill();
+      ctx.fillStyle   = 'rgba(255,255,255,0.85)';
+      ctx.font        = `600 ${Math.round(width * 0.038)}px sans-serif`;
+      ctx.textAlign   = 'left';
+      ctx.fillText(label, 22, height - 22);
+      ctx.restore();
+    }
+  }, [landmarks, width, height, label]);
+
+  return (
+    <canvas
+      ref={ref}
+      width={width}
+      height={height}
+      className="absolute inset-0 w-full h-full"
+    />
+  );
+}
+
+// ─── Step labels ──────────────────────────────────────────────────────────────
+const STEP_LABELS = [
+  'Starting position',
+  'First move',
+  'Key shape',
+  'Hold & finish',
+];
+
+const STEP_CUES = [
+  'This is where you start — notice the arm position',
+  'Watch how the arms move here',
+  'This is the key shape — lock it in',
+  'End strong — hold this position',
+];
+
+// ─── TeachPhase ───────────────────────────────────────────────────────────────
+
+export function TeachPhase({ keyframes, onComplete, videoSrc, startMs = 0, endMs }: TeachPhaseProps) {
+  const [mode, setMode]         = useState<'diagram' | 'done'>(videoSrc ? 'diagram' : 'diagram');
+  const [currentIdx, setCurrentIdx] = useState(0);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [dims, setDims]         = useState({ w: 0, h: 0 });
+
+  // Measure container
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const obs = new ResizeObserver(entries => {
+      const e = entries[0];
+      setDims({ w: e.contentRect.width, h: e.contentRect.height });
+    });
+    obs.observe(el);
+    return () => obs.disconnect();
+  }, []);
+
+  // No keyframes — skip
+  useEffect(() => {
+    if (keyframes.length === 0) { onComplete(); }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Speak cue when frame changes
+  useEffect(() => {
+    if (keyframes.length === 0) return;
+    const cue = STEP_CUES[Math.min(currentIdx, STEP_CUES.length - 1)];
+    speechManager.speak(cue, 'normal');
+  }, [currentIdx, keyframes.length]);
+
+  if (keyframes.length === 0) return null;
+
+  const total       = keyframes.length;
+  const isLast      = currentIdx >= total - 1;
+  const currentPose = keyframes[currentIdx]?.landmarks;
+  const label       = STEP_LABELS[Math.min(currentIdx, STEP_LABELS.length - 1)];
+
+  const goNext = () => {
+    if (isLast) {
+      onComplete();
+    } else {
+      setCurrentIdx(i => i + 1);
+    }
+  };
+
+  const goPrev = () => {
+    if (currentIdx > 0) setCurrentIdx(i => i - 1);
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 bg-[#0a0a0a] flex flex-col">
+      {/* Header */}
+      <div className="flex items-center justify-between px-5 pt-10 pb-4 shrink-0">
+        <div>
+          <p className="text-white/30 text-[11px] uppercase tracking-widest">Tutorial</p>
+          <p className="text-white text-xl font-bold mt-0.5">Study the arm positions</p>
+        </div>
+        <button
+          onClick={onComplete}
+          className="text-white/30 hover:text-white/60 text-sm transition-colors"
+        >
+          Skip
+        </button>
+      </div>
+
+      {/* Step dots */}
+      <div className="flex justify-center gap-2 pb-3 shrink-0">
+        {Array.from({ length: total }, (_, i) => (
+          <div
+            key={i}
+            className={`h-1.5 rounded-full transition-all duration-300 ${
+              i === currentIdx
+                ? 'w-6 bg-violet-400'
+                : i < currentIdx
+                  ? 'w-2 bg-violet-600'
+                  : 'w-2 bg-white/15'
+            }`}
+          />
+        ))}
+      </div>
+
+      {/* Diagram area */}
+      <div
+        ref={containerRef}
+        className="flex-1 relative mx-5 rounded-2xl overflow-hidden bg-gray-950 border border-white/8 min-h-0"
+      >
+        {currentPose && dims.w > 0 && (
+          <BodyDiagram
+            landmarks={currentPose}
+            width={dims.w}
+            height={dims.h}
+            label={label}
+          />
+        )}
+
+        {/* Color legend */}
+        <div className="absolute top-3 right-3 flex flex-col gap-1.5 z-10">
+          <div className="flex items-center gap-1.5 bg-black/50 backdrop-blur px-2 py-1 rounded-lg">
+            <div className="w-3 h-3 rounded-full bg-violet-400" />
+            <span className="text-[11px] text-white/70 font-medium">Left arm</span>
+          </div>
+          <div className="flex items-center gap-1.5 bg-black/50 backdrop-blur px-2 py-1 rounded-lg">
+            <div className="w-3 h-3 rounded-full bg-emerald-400" />
+            <span className="text-[11px] text-white/70 font-medium">Right arm</span>
+          </div>
+        </div>
+      </div>
+
+      {/* Cue text */}
+      <p className="text-white/50 text-sm text-center px-6 py-3 shrink-0">
+        {STEP_CUES[Math.min(currentIdx, STEP_CUES.length - 1)]}
+      </p>
+
+      {/* Navigation buttons */}
+      <div className="flex gap-3 px-5 pb-10 shrink-0">
+        {currentIdx > 0 && (
+          <button
+            onClick={goPrev}
+            className="flex-1 py-4 bg-white/8 hover:bg-white/12 text-white/60 rounded-2xl font-medium transition-all flex items-center justify-center gap-2"
+          >
+            ← Back
+          </button>
+        )}
+
+        <button
+          onClick={goNext}
+          className={`${currentIdx > 0 ? 'flex-[2]' : 'flex-1'} py-4 rounded-2xl font-bold transition-all flex items-center justify-center gap-2 ${
+            isLast
+              ? 'bg-primary hover:bg-primary/90 text-white shadow-[0_0_20px_rgba(147,51,234,0.3)]'
+              : 'bg-white/12 hover:bg-white/20 text-white'
+          }`}
+        >
+          {isLast ? (
+            <>Let&apos;s dance! 🕺</>
+          ) : (
+            <>Next <ChevronRight className="w-4 h-4" /></>
+          )}
+        </button>
+      </div>
+    </div>
+  );
 }
