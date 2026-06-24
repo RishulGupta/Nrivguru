@@ -189,7 +189,17 @@ export default function Practice() {
   // ── Chunk loop ──
   const [currentChunkIndex, setCurrentChunkIndex] = useState(0);
   const [showWarmUpPrompt, setShowWarmUpPrompt] = useState(false);
-  const [showModeSelector, setShowModeSelector] = useState(true);
+
+  // If SegmentPhases passed a mode via location state, skip the selector entirely
+  const locationState = (useLocation().state as any) ?? {};
+  const [showModeSelector, setShowModeSelector] = useState(
+    !locationState?.skipModeSelector
+  );
+
+  // ── Announcement screen (blank + countdown before video and tutorial) ──
+  // 'video' = "Watching video now", 'tutorial' = "Tutorial now", null = normal
+  const [announcement, setAnnouncement] = useState<'video' | 'tutorial' | null>(null);
+  const [announceCd, setAnnounceCd]     = useState(3); // countdown value
 
   // ── State machine ──
   const {
@@ -316,13 +326,39 @@ export default function Practice() {
     }
   }, [lowVisibility]);
 
-  // ── Phase transition spoken cues ──
+  // ── Announcement countdown — fires before watch and teach phases ──
+  // Shows a blank screen: "Watching video now  3-2-1" or "Tutorial now  3-2-1"
   const prevPhaseRef = useRef(phase);
   useEffect(() => {
     if (prevPhaseRef.current === phase) return;
+    const prev = prevPhaseRef.current;
     prevPhaseRef.current = phase;
+
     if (phase === 'watch') {
-      speechManager.speak("Watch the full routine. Notice the arm and leg positions.", "normal");
+      setAnnouncement('video');
+      setAnnounceCd(3);
+    } else if (phase === 'teach' && prev !== 'idle') {
+      setAnnouncement('tutorial');
+      setAnnounceCd(3);
+    }
+  }, [phase]);
+
+  // Countdown tick for announcement
+  useEffect(() => {
+    if (!announcement) return;
+    if (announceCd <= 0) {
+      // Countdown done — clear overlay and let normal phase rendering take over
+      setAnnouncement(null);
+      return;
+    }
+    const t = setTimeout(() => setAnnounceCd(c => c - 1), 1000);
+    return () => clearTimeout(t);
+  }, [announcement, announceCd]);
+
+  // ── Phase transition spoken cues ──
+  useEffect(() => {
+    if (phase === 'watch') {
+      // Speech fired after announcement clears
     } else if (phase === 'prep_arms') {
       // PrepTimeSelector handles its own speech
     } else if (phase === 'arms') {
@@ -338,9 +374,16 @@ export default function Practice() {
     }
   }, [phase]);
 
+  // Apply mode from SegmentPhases location state
+  useEffect(() => {
+    if (locationState?.mode && locationState?.skipModeSelector) {
+      sendSessionEvent({ type: 'SET_MODE', mode: locationState.mode });
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // ── Session memory & warm-up prompt ──
-  const location = useLocation();
-  const warmupDone = (location.state as any)?.warmupDone;
+  const warmupDone = locationState?.warmupDone;
   useEffect(() => {
     if (routine) {
       // If user just came from warm-up page, skip the prompt
@@ -1000,11 +1043,33 @@ export default function Practice() {
         </div>
       )}
 
-      {/* ── Teach Phase (Step 2) ── */}
-      {phase === 'teach' && (
+      {/* ── Announcement screen — blank bg + countdown before video and tutorial ── */}
+      {announcement && (
+        <div className="fixed inset-0 z-[90] bg-black flex flex-col items-center justify-center gap-8">
+          <p className="text-white/40 text-sm uppercase tracking-widest">
+            {announcement === 'video' ? 'Getting ready to watch' : 'Getting ready for tutorial'}
+          </p>
+          <h1 className="text-4xl font-bold text-white text-center px-8">
+            {announcement === 'video' ? '🎬 Watching video now' : '📖 Tutorial now'}
+          </h1>
+          {announceCd > 0 ? (
+            <div className="text-8xl font-bold text-white/80 tabular-nums animate-in zoom-in duration-200">
+              {announceCd}
+            </div>
+          ) : (
+            <div className="text-4xl animate-in zoom-in duration-200">▶️</div>
+          )}
+        </div>
+      )}
+
+      {/* ── Teach Phase (Step 2) — manual tap-to-advance, body diagram ── */}
+      {phase === 'teach' && !announcement && (
         <TeachPhase
           keyframes={keyframes}
           onComplete={handleTeachComplete}
+          videoSrc={chunk?.clip_url || getOriginalVideoUrl() || routine?.video_blob_url || ''}
+          startMs={chunk?.start_time_ms}
+          endMs={chunk?.end_time_ms}
         />
       )}
 
