@@ -429,24 +429,30 @@ export default function Practice() {
     setProprioQuestion(null);
     lastBreathingCueIndex.current = -1;
 
-    // Load pre-extracted poses
-    if (c?.pose_slice_json && Array.isArray(c.pose_slice_json) && c.pose_slice_json.length > 0) {
+    // Load pre-extracted poses — handle both JSON string and already-parsed array
+    const rawPoses = c?.pose_slice_json;
+    let poses: any[] | null = null;
+    if (rawPoses) {
       try {
-        const poses = typeof c.pose_slice_json === 'string'
-          ? JSON.parse(c.pose_slice_json)
-          : c.pose_slice_json;
-        setReferencePoses(poses);
-        loadReference(poses);
-        setKeyframes(extractKeyframes(poses, 4));
+        poses = typeof rawPoses === 'string' ? JSON.parse(rawPoses) : rawPoses;
+        if (!Array.isArray(poses) || poses.length === 0) poses = null;
       } catch (e) {
         console.error("Failed to parse pose_slice_json", e);
+        poses = null;
       }
+    }
+
+    if (poses && poses.length > 0) {
+      setReferencePoses(poses);
+      loadReference(poses);
+      // Need ≥2 frames for keyframes — with fewer, use what we have
+      const kf = extractKeyframes(poses, Math.min(4, Math.max(1, Math.floor(poses.length / 3))));
+      setKeyframes(kf.length > 0 ? kf : poses.slice(0, 1));
     } else {
-      // No pose data — skip teach phase, user will watch video instead
       setReferencePoses([]);
       setKeyframes([]);
       loadReference([]);
-      console.warn("No pose_slice_json for chunk", idx);
+      console.warn('No pose_slice_json for chunk', idx, '— teach phase will be skipped');
     }
 
     // Start chunk in state machine
@@ -808,6 +814,13 @@ export default function Practice() {
   const handleTeachComplete = useCallback(() => {
     sendSessionEvent({ type: 'PHASE_COMPLETE' });
   }, [sendSessionEvent]);
+
+  // Skip teach phase entirely if no keyframes available
+  useEffect(() => {
+    if (phase === 'teach' && keyframes.length === 0) {
+      sendSessionEvent({ type: 'PHASE_COMPLETE' });
+    }
+  }, [phase, keyframes.length, sendSessionEvent]);
 
   const handleNextPhase = () => {
     setAttemptComplete(false);
