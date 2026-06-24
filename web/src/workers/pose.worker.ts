@@ -53,7 +53,8 @@ function resetKalman() {
 }
 
 // ─── EMA for scores ───────────────────────────────────────────────────────────
-const SCORE_EMA_ALPHA = 0.5;
+// ponytail: 0.08 so the ambient dot transitions smoothly over ~1s, not per-frame
+const SCORE_EMA_ALPHA = 0.08;
 let emaArmScore = 0, emaLegScore = 0;
 
 // ─── Frame queue (back-pressure) ──────────────────────────────────────────────
