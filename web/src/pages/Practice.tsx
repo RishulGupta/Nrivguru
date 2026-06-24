@@ -253,6 +253,60 @@ export default function Practice() {
     correctionEngine.current = ce;
   }, [styleConfig]);
 
+  // ── Pre-move audio ticks (fires 500ms before each velocity onset in reference) ──
+  const onsetTimesRef = useRef<number[]>([]);
+  const firedOnsetsRef = useRef(new Set<number>());
+
+  // Compute onsets when reference poses load
+  useEffect(() => {
+    if (referencePoses.length < 5) return;
+    // ponytail: inline velocity then simple peak detection — no imported helper needed
+    const vels: number[] = [0];
+    for (let i = 1; i < referencePoses.length; i++) {
+      const prev = referencePoses[i - 1].landmarks;
+      const curr = referencePoses[i].landmarks;
+      let v = 0;
+      for (const idx of [11, 12, 13, 14, 15, 16]) {
+        const p = prev[idx], c = curr[idx];
+        if (!p || !c) continue;
+        v += Math.sqrt((c.x - p.x) ** 2 + (c.y - p.y) ** 2);
+      }
+      vels.push(v);
+    }
+    const mean = vels.reduce((a, b) => a + b, 0) / vels.length;
+    const max  = Math.max(...vels);
+    const thresh = mean + (max - mean) * 0.4;
+    const onsets: number[] = [];
+    for (let i = 1; i < vels.length - 1; i++) {
+      if (vels[i] >= vels[i-1] && vels[i] >= vels[i+1] && vels[i] >= thresh) {
+        if (!onsets.length || i - onsets[onsets.length - 1] > 3) {
+          onsets.push(referencePoses[i].timestamp_ms);
+        }
+      }
+    }
+    onsetTimesRef.current = onsets;
+    firedOnsetsRef.current.clear();
+  }, [referencePoses]);
+
+  // During practice, poll for upcoming onsets and play a tick
+  useEffect(() => {
+    if (!isPractice || !chunk) return;
+    const interval = setInterval(() => {
+      const v = refVideoRef.current;
+      if (!v) return;
+      const nowMs = v.currentTime * 1000;
+      for (const t of onsetTimesRef.current) {
+        // Fire 500ms before the onset
+        if (!firedOnsetsRef.current.has(t) && t - nowMs > 0 && t - nowMs < 500) {
+          firedOnsetsRef.current.add(t);
+          playTone(440, 0.05, 0.08); // very subtle click
+        }
+      }
+    }, 50);
+    return () => clearInterval(interval);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isPractice, chunk]);
+
   // ── Visibility warning auto-dismiss ──
   useEffect(() => {
     if (lowVisibility) {
@@ -568,6 +622,28 @@ export default function Practice() {
     return () => cancelAnimationFrame(animId);
   }, [phase, referencePoses.length, isWorkerReady, captureReferenceFrame]);
 
+  // ── Single AudioContext for all in-session sounds (ponytail: one instance, not one per event) ──
+  const audioCtxRef = useRef<AudioContext | null>(null);
+  const getAudioCtx = useCallback(() => {
+    if (!audioCtxRef.current) {
+      try { audioCtxRef.current = new AudioContext(); } catch { /* ignore */ }
+    }
+    return audioCtxRef.current;
+  }, []);
+
+  const playTone = useCallback((freq: number, vol: number, dur: number) => {
+    const ctx = getAudioCtx();
+    if (!ctx) return;
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.connect(gain); gain.connect(ctx.destination);
+    osc.frequency.value = freq;
+    osc.type = 'sine';
+    gain.gain.setValueAtTime(vol, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + dur);
+    osc.start(); osc.stop(ctx.currentTime + dur);
+  }, [getAudioCtx]);
+
   // ── Green score chime ──
   const consecutiveGreenFrames = useRef(0);
   const lastChimeTime = useRef(0);
@@ -577,23 +653,11 @@ export default function Practice() {
     if (currentArmScore > 85 && currentLegScore > 85 && isPractice) {
       consecutiveGreenFrames.current++;
       if (consecutiveGreenFrames.current >= 4 && Date.now() - lastChimeTime.current > 5000) {
-        try {
-          const ctx = new AudioContext();
-          const osc = ctx.createOscillator();
-          const gain = ctx.createGain();
-          osc.connect(gain);
-          gain.connect(ctx.destination);
-          osc.frequency.value = 880;
-          osc.type = 'sine';
-          gain.gain.setValueAtTime(0.15, ctx.currentTime);
-          gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.3);
-          osc.start(ctx.currentTime);
-          osc.stop(ctx.currentTime + 0.3);
-          lastChimeTime.current = Date.now();
-          consecutiveGreenFrames.current = 0;
-          setShowChime(true);
-          setTimeout(() => setShowChime(false), 1500);
-        } catch { /* ignore */ }
+        playTone(880, 0.15, 0.3);
+        lastChimeTime.current = Date.now();
+        consecutiveGreenFrames.current = 0;
+        setShowChime(true);
+        setTimeout(() => setShowChime(false), 1500);
       }
     } else {
       consecutiveGreenFrames.current = 0;
