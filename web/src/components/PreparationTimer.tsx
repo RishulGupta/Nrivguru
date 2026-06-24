@@ -1,168 +1,160 @@
 import { useEffect, useRef, useState } from 'react';
-import { countingSystem } from '@taal/shared/utils/CountingSystem';
 import { speechManager } from '@taal/shared/utils/SpeechManager';
-import { BeatIndicator } from './BeatIndicator';
+import type { PoseLandmark } from '@taal/shared/types/pose';
 
 interface PreparationTimerProps {
-  /** Called when the countdown finishes or user skips */
   onReady: () => void;
-  /** Called if the user wants to cancel / go back */
   onCancel?: () => void;
-  /** Playback rate to pass to BeatIndicator */
   playbackRate: number;
-  /** Duration in seconds for the countdown (4-8) */
-  duration?: number;
-  /** Phase label shown above countdown */
+  duration?: number; // ponytail: kept for compat but ignored — always 5
   phaseLabel: string;
+  /** Live webcam stream ref so we can show camera behind countdown */
+  webcamRef?: React.RefObject<HTMLVideoElement>;
+  /** Current user landmarks — used to gate countdown until shoulders visible */
+  userLandmarks?: PoseLandmark[] | null;
+  /** First-frame reference landmarks to show target arm position */
+  startPoseLandmarks?: PoseLandmark[] | null;
 }
+
+const COUNTDOWN_SECS = 5;
 
 export function PreparationTimer({
   onReady,
   onCancel,
-  playbackRate,
-  duration = 6,
-  phaseLabel
+  playbackRate: _playbackRate,
+  phaseLabel,
+  webcamRef,
+  userLandmarks,
+  startPoseLandmarks: _startPoseLandmarks,
 }: PreparationTimerProps) {
-  const [countdown, setCountdown] = useState(duration);
-  const [isCounting, setIsCounting] = useState(true);
-  const [beatStarted, setBeatStarted] = useState(false);
+  const [countdown, setCountdown] = useState(COUNTDOWN_SECS);
+  const [bodyDetected, setBodyDetected] = useState(false);
+  const [started, setStarted] = useState(false);
+  const countRef = useRef(COUNTDOWN_SECS);
+  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  // Start counting system for "5, 6, 7, 8"
+  // Gate: check if shoulders are visible in latest landmarks
   useEffect(() => {
-    const startDelay = setTimeout(() => {
-      countingSystem.start(6000, playbackRate);
-      setBeatStarted(true);
-    }, 500);
+    if (bodyDetected) return;
+    if (!userLandmarks) return;
+    const ls = userLandmarks[11], rs = userLandmarks[12];
+    const visible = (ls?.visibility ?? 0) > 0.4 && (rs?.visibility ?? 0) > 0.4;
+    if (visible) setBodyDetected(true);
+  }, [userLandmarks, bodyDetected]);
 
-    return () => {
-      clearTimeout(startDelay);
-      countingSystem.stop();
-    };
-  }, [playbackRate]);
-
-  // Spoken countdown
+  // Start countdown once body is detected
   useEffect(() => {
-    if (countdown <= 4 && countdown >= 1) {
-      speechManager.speak(String(countdown), 'normal');
-    }
-  }, [countdown]);
+    if (!bodyDetected || started) return;
+    setStarted(true);
+    speechManager.speak('3', 'normal');
+    setCountdown(3);
+    countRef.current = 3;
 
-  // "5, 6, 7, 8" spoken after countdown
-  useEffect(() => {
-    if (countdown <= 0 && !beatStarted) {
-      speechManager.speak("5, 6, 7, 8", 'urgent');
-      setBeatStarted(true);
-    }
-  }, [countdown, beatStarted]);
-
-  // Countdown timer
-  useEffect(() => {
-    if (!isCounting) return;
-    const interval = setInterval(() => {
-      setCountdown(prev => {
-        if (prev <= 1) {
-          clearInterval(interval);
-          setIsCounting(false);
-          countingSystem.stop();
-          setTimeout(onReady, 800);
-          return 0;
-        }
-        return prev - 1;
-      });
+    intervalRef.current = setInterval(() => {
+      const next = countRef.current - 1;
+      countRef.current = next;
+      if (next >= 1) {
+        speechManager.speak(String(next), 'normal');
+        setCountdown(next);
+      } else {
+        clearInterval(intervalRef.current!);
+        setCountdown(0);
+        setTimeout(onReady, 500);
+      }
     }, 1000);
-    return () => clearInterval(interval);
-  }, [isCounting, onReady]);
 
-  // Auto-proceed safety: always proceed after duration+2 seconds
+    return () => { if (intervalRef.current) clearInterval(intervalRef.current); };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [bodyDetected]);
+
+  // Safety: if no body detected after 8s, start anyway
   useEffect(() => {
-    const safety = setTimeout(() => {
-      setIsCounting(false);
-      countingSystem.stop();
-      onReady();
-    }, (duration + 3) * 1000);
-    return () => clearTimeout(safety);
-  }, [duration, onReady]);
+    const t = setTimeout(() => {
+      if (!bodyDetected) {
+        setBodyDetected(true);
+      }
+    }, 8000);
+    return () => clearTimeout(t);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const isArmsPhase = phaseLabel.toLowerCase().includes('upper') || phaseLabel.toLowerCase().includes('arm');
 
   return (
-    <div className="fixed inset-0 z-[100] bg-black flex flex-col items-center justify-center">
-      {/* Pulsating background ring */}
-      <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-        <div className={`w-72 h-72 rounded-full border-4 transition-all duration-200 ${
-          countdown > 0
-            ? 'border-violet-500/40 scale-[0.85] animate-pulse'
-            : 'border-green-500/60 scale-100'
-        }`} />
-      </div>
+    <div className="fixed inset-0 z-[100] overflow-hidden">
+      {/* Camera feed behind everything */}
+      {webcamRef?.current && (
+        <video
+          ref={webcamRef}
+          className="absolute inset-0 w-full h-full object-cover scale-x-[-1]"
+          playsInline
+          muted
+        />
+      )}
 
-      {beatStarted && (
-        <div className="absolute top-20 right-20">
-          <BeatIndicator isPlaying={true} playbackRate={playbackRate} />
+      {/* Dark overlay */}
+      <div className="absolute inset-0 bg-black/60" />
+
+      {/* Body detection prompt */}
+      {!bodyDetected && (
+        <div className="absolute inset-0 flex flex-col items-center justify-center z-10 gap-4">
+          <div className="text-white/60 text-sm uppercase tracking-widest">{phaseLabel}</div>
+          <div className="text-5xl animate-bounce">👆</div>
+          <p className="text-white text-xl font-bold text-center px-8">
+            {isArmsPhase ? 'Show me your shoulders' : 'Step back so I can see you'}
+          </p>
+          <p className="text-white/50 text-sm text-center px-12">
+            {isArmsPhase
+              ? 'Make sure both shoulders are in frame'
+              : 'Your whole body should be visible'}
+          </p>
         </div>
       )}
 
-      <div className="relative z-10 text-center space-y-6">
-        <p className="text-white/50 text-sm uppercase tracking-[0.2em]">
-          {phaseLabel}
-        </p>
+      {/* Countdown */}
+      {bodyDetected && (
+        <div className="absolute inset-0 flex flex-col items-center justify-center z-10 gap-6">
+          <p className="text-white/60 text-sm uppercase tracking-[0.2em]">{phaseLabel}</p>
 
-        {countdown > 0 ? (
-          <>
-            <div className="text-8xl font-outfit font-bold text-white tabular-nums">
+          {countdown > 0 ? (
+            <div className="text-9xl font-bold text-white tabular-nums drop-shadow-2xl animate-in zoom-in duration-200">
               {countdown}
             </div>
-            <p className="text-gray-400 text-lg">
-              Get into position...
-            </p>
-          </>
-        ) : (
-          <div className="space-y-4 animate-in zoom-in duration-300">
-            <div className="text-7xl">
-              🕺
+          ) : (
+            <div className="flex flex-col items-center gap-3 animate-in zoom-in duration-200">
+              <div className="text-7xl">🕺</div>
+              <p className="text-green-400 text-3xl font-bold">GO!</p>
             </div>
-            <p className="text-green-400 text-2xl font-bold">
-              5, 6, 7, 8!
-            </p>
-            <p className="text-gray-400 text-base animate-pulse">
-              Starting now...
-            </p>
-          </div>
-        )}
+          )}
 
-        {/* Countdown dots */}
-        <div className="flex justify-center gap-2">
-          {Array.from({ length: duration }, (_, i) => (
-            <div
-              key={i}
-              className={`h-1.5 rounded-full transition-all duration-300 ${
-                i < duration - countdown
-                  ? 'w-6 bg-violet-500'
-                  : 'w-1.5 bg-gray-700'
-              }`}
-            />
-          ))}
+          <p className="text-white/40 text-sm">
+            {isArmsPhase ? 'Focus on your arm positions' : 'You\'ve got this!'}
+          </p>
         </div>
-      </div>
+      )}
 
-      {/* Skip / Cancel buttons */}
-      <div className="absolute bottom-16 flex gap-4 z-10">
-        {onCancel && (
-          <button
-            onClick={onCancel}
-            className="px-6 py-3 bg-white/5 hover:bg-white/10 text-gray-300 rounded-xl font-medium transition-all text-base"
-          >
-            ← Back
-          </button>
-        )}
+      {/* Back button */}
+      {onCancel && (
+        <button
+          onClick={onCancel}
+          className="absolute bottom-10 left-1/2 -translate-x-1/2 z-20 px-6 py-3 bg-white/10 hover:bg-white/20 text-white rounded-xl font-medium transition-all"
+        >
+          ← Back
+        </button>
+      )}
+
+      {/* Skip — available once body detected */}
+      {bodyDetected && countdown > 0 && (
         <button
           onClick={() => {
-            countingSystem.stop();
+            if (intervalRef.current) clearInterval(intervalRef.current);
             onReady();
           }}
-          className="px-6 py-3 bg-white/10 hover:bg-white/20 text-white rounded-xl font-medium transition-all text-base"
+          className="absolute bottom-10 right-8 z-20 px-5 py-2 bg-white/10 hover:bg-white/20 text-white/70 rounded-xl text-sm transition-all"
         >
-          ⏭️ Skip countdown
+          Skip ⏭
         </button>
-      </div>
+      )}
     </div>
   );
 }

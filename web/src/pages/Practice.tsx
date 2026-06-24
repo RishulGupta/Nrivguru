@@ -16,7 +16,6 @@ import { usePoseDetection } from '../hooks/usePoseDetection';
 import { speechManager } from '@taal/shared/utils/SpeechManager';
 import { countingSystem } from '@taal/shared/utils/CountingSystem';
 import { TeachPhase } from '../components/TeachPhase';
-import { PrepTimeSelector } from '../components/PrepTimeSelector';
 import { PracticeModeSelector } from '../components/PracticeModeSelector';
 import { extractKeyframes } from '@taal/shared/utils/KeyframeExtractor';
 import { BeatIndicator } from '../components/BeatIndicator';
@@ -98,13 +97,6 @@ export default function Practice() {
   const [keyframes, setKeyframes] = useState<PoseFrame[]>([]);
   const [showImprovement, setShowImprovement] = useState(false);
   const [showWatchOverlay, setShowWatchOverlay] = useState(false);
-  const [prepTime, setPrepTime] = useState(() => {
-    const stored = sessionStorage.getItem('taal-prep-time');
-    return stored ? Number(stored) : 6;
-  });
-  const [hasChosenPrepTime, setHasChosenPrepTime] = useState(() => {
-    return !!sessionStorage.getItem('taal-prep-time');
-  });
 
   // ── Modules ──
   const difficultyScaler = useRef(new DifficultyScaler()).current;
@@ -199,8 +191,6 @@ export default function Practice() {
     setShowImprovement(false);
     setShowWatchOverlay(false);
     setProprioQuestion(null);
-    setPrepTime(6);
-    setHasChosenPrepTime(false);
     lastBreathingCueIndex.current = -1;
 
     // Load pre-extracted poses
@@ -771,25 +761,15 @@ export default function Practice() {
         </div>
       )}
 
-      {/* ── Preparation Timer (Step 1) — with prep time selector for arms ── */}
-      {phase === 'prep_arms' && !hasChosenPrepTime && (
-        <PrepTimeSelector
-          onSelect={(sec) => {
-            setPrepTime(sec);
-            setHasChosenPrepTime(true);
-            sessionStorage.setItem('taal-prep-time', String(sec));
-          }}
-          onCancel={handlePrevPhase}
-        />
-      )}
-
-      {isPreparation && !(phase === 'prep_arms' && !hasChosenPrepTime) && (
+      {/* ── Preparation Timer — shows camera, gates on body detection ── */}
+      {isPreparation && (
         <PreparationTimer
           onReady={handlePrepDone}
           onCancel={handlePrevPhase}
           playbackRate={effectivePlaybackRate}
-          duration={prepTime}
           phaseLabel={phaseLabel}
+          webcamRef={webcamRef}
+          userLandmarks={userPose}
         />
       )}
 
