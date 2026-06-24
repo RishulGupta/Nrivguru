@@ -2,8 +2,44 @@ import { useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import { Loader2, Camera, SkipForward, SkipBack, ChevronLeft, ChevronRight } from 'lucide-react';
 import SkeletonCanvas from '../components/SkeletonCanvas';
-import ScoreDisplay from '../components/ScoreDisplay';
 import { PreparationTimer } from '../components/PreparationTimer';
+
+// Inline micro-components — too small to deserve their own files
+// ponytail: no separate file for 10-line components
+function AmbientScore({ armScore }: { armScore: number }) {
+  const color = armScore > 75 ? '#4ade80' : armScore > 50 ? '#fbbf24' : '#f87171';
+  const glow  = armScore > 75 ? '#4ade8066' : armScore > 50 ? '#fbbf2466' : '#f8717166';
+  return (
+    <div
+      className="w-5 h-5 rounded-full transition-colors duration-700"
+      style={{ backgroundColor: color, boxShadow: `0 0 12px 4px ${glow}` }}
+    />
+  );
+}
+
+function ChunkProgressBar({
+  startMs, endMs, videoRef,
+}: { startMs: number; endMs: number; videoRef: React.RefObject<HTMLVideoElement> }) {
+  const [pct, setPct] = useState(0);
+  useEffect(() => {
+    const v = videoRef.current;
+    if (!v || endMs <= startMs) return;
+    const tick = () => {
+      const p = Math.min(1, Math.max(0, (v.currentTime * 1000 - startMs) / (endMs - startMs)));
+      setPct(p * 100);
+    };
+    v.addEventListener('timeupdate', tick);
+    return () => v.removeEventListener('timeupdate', tick);
+  }, [startMs, endMs, videoRef]);
+  return (
+    <div className="absolute top-0 left-0 right-0 h-0.5 bg-white/10 z-30">
+      <div
+        className="h-full bg-violet-400 transition-[width] duration-300"
+        style={{ width: `${pct}%` }}
+      />
+    </div>
+  );
+}
 import { ImprovementPhase } from '../components/ImprovementPhase';
 import { supabase } from '../lib/supabase';
 import { useAuthStore } from '../store/useStore';
@@ -951,175 +987,108 @@ export default function Practice() {
           )}
         </header>
 
-      {/* ── Main area (hidden via CSS so video refs stay alive) ── */}
-      <div className={`flex-1 min-h-0 max-h-full ${showImprovement ? 'hidden' : 'flex flex-col'}`}>
-        <main className="flex-1 flex flex-col lg:flex-row w-full min-h-0 relative">
-          {/* ── LEFT: Reference video ── */}
-          <div className="flex-1 relative bg-gray-900 border-r border-white/10 overflow-hidden">
-            <video
-              ref={refVideoRef}
-              className="w-full h-full object-contain"
-              muted
-              playsInline
+      {/* ── Main area: fullscreen camera + PiP reference ── */}
+      <div className={`flex-1 min-h-0 relative ${showImprovement ? 'hidden' : ''}`}>
+
+        {/* Fullscreen user camera */}
+        <video
+          ref={webcamRef}
+          className={`absolute inset-0 w-full h-full object-cover ${isMirrorMode ? 'scale-x-[-1]' : ''}`}
+          playsInline
+          muted
+        />
+
+        {/* No camera prompt */}
+        {!hasWebcam && (
+          <div className="absolute inset-0 z-20 bg-black flex flex-col items-center justify-center gap-4">
+            <Camera className="w-16 h-16 text-white/40" />
+            <p className="text-white font-semibold">{webcamError || '📷 Allow camera access'}</p>
+            <button
+              onClick={handleRetryCamera}
+              disabled={retryingCam}
+              className="bg-primary hover:bg-primary/90 text-white font-bold px-6 py-3 rounded-xl transition-all"
+            >
+              {retryingCam ? '⏳' : '📷 Start Camera'}
+            </button>
+          </div>
+        )}
+
+        {/* Skeleton overlay — mirrored to match camera */}
+        <div className={`absolute inset-0 pointer-events-none ${isMirrorMode ? 'scale-x-[-1]' : ''}`}>
+          {userPose && (
+            <SkeletonCanvas
+              landmarks={userPose}
+              refLandmarks={currentRefPose}
+              focusArea={phase as any}
+              showArrows={false}
+              width={640}
+              height={480}
+              jointScores={jointScores.length > 0 ? Object.fromEntries(jointScores.map(j => [JOINT_NAME_TO_IDX[j.name] ?? j.name, j.score])) as any : undefined}
             />
-            {videoError && (
-              <div className="absolute inset-0 flex items-center justify-center bg-gray-900/90 z-20">
-                <div className="text-center p-6">
-                  <p className="text-4xl mb-3">🎥</p>
-                  <p className="text-red-400 text-sm font-medium">{videoError}</p>
-                </div>
-              </div>
-            )}
-            <div className="absolute inset-0 pointer-events-none">
-              {currentRefPose && !videoError && (
-                <SkeletonCanvas
-                  landmarks={currentRefPose}
-                  width={1280}
-                  height={720}
-                />
-              )}
+          )}
+        </div>
+
+        {/* Reference video: fullscreen during watch, PiP during practice */}
+        <div className={
+          phase === 'watch'
+            ? 'absolute inset-0 z-10 bg-black'
+            : isPractice
+              ? 'absolute top-16 left-3 z-20 w-[28%] max-w-[140px] rounded-xl overflow-hidden border border-white/20 shadow-2xl bg-black'
+              : 'hidden'
+        }>
+          <video
+            ref={refVideoRef}
+            className={phase === 'watch' ? 'w-full h-full object-contain' : 'w-full aspect-video object-contain bg-black'}
+            muted
+            playsInline
+          />
+          {videoError && (
+            <div className="absolute inset-0 flex items-center justify-center bg-black/80">
+              <p className="text-red-400 text-[10px] text-center px-2">{videoError}</p>
+            </div>
+          )}
+          {isPractice && !videoError && (
+            <div className="absolute bottom-1 right-1 bg-black/60 text-white/70 text-[9px] px-1.5 py-0.5 rounded-md">
+              {effectivePlaybackRate === 0.5 ? '½×' : effectivePlaybackRate === 0.75 ? '¾×' : '1×'}
+            </div>
+          )}
+        </div>
+
+        {/* Chunk progress bar — thin line at very top */}
+        {isPractice && !attemptComplete && (
+          <ChunkProgressBar
+            startMs={chunk?.start_time_ms ?? 0}
+            endMs={chunk?.end_time_ms ?? 0}
+            videoRef={refVideoRef}
+          />
+        )}
+
+        {/* Ambient score indicator — coloured dot, no numbers */}
+        {isPractice && !attemptComplete && (
+          <div className="absolute bottom-6 right-5 z-30">
+            <AmbientScore armScore={currentArmScore} />
+          </div>
+        )}
+
+        {/* "Nice!" flash when doing great */}
+        {showChime && (
+          <div className="absolute top-20 left-1/2 -translate-x-1/2 z-30 animate-in zoom-in duration-200">
+            <div className="bg-green-500/30 border border-green-400/50 backdrop-blur-md px-5 py-2 rounded-full">
+              <p className="text-green-300 font-bold text-base">✨ Keep going!</p>
             </div>
           </div>
+        )}
 
-          {/* ── RIGHT: User webcam ── */}
-          <div className="flex-1 relative bg-gray-950 overflow-hidden">
-            {!hasWebcam && (
-              <div className="absolute inset-0 flex flex-col items-center justify-center z-20 bg-black">
-                <Camera className="w-16 h-16 text-destructive mb-4" />
-                <p className="text-white font-semibold mb-4">{webcamError || '📷 Allow camera access'}</p>
-                <button
-                  onClick={handleRetryCamera}
-                  disabled={retryingCam}
-                  className="bg-primary hover:bg-primary/90 text-white font-bold px-6 py-3 rounded-xl transition-all"
-                >
-                  {retryingCam ? '⏳' : '📷 Start Camera'}
-                </button>
-              </div>
-            )}
-
-            {/* Visibility warning — full body guide */}
-            {visibleWarning && !showImprovement && (
-              <div className="absolute inset-0 flex items-center justify-center z-30 pointer-events-none">
-                <div className="bg-yellow-500/15 border border-yellow-500/30 backdrop-blur-md px-6 py-5 rounded-2xl text-center max-w-xs mx-auto pointer-events-auto">
-                  <p className="text-yellow-400 font-bold text-lg mb-1">👀 Step back</p>
-                  <p className="text-yellow-300/70 text-xs">Make sure your full body is visible — shoulders to feet should be in frame</p>
-                  <div className="mt-3 flex justify-center gap-2 opacity-40">
-                    <span className="text-3xl">🧍</span>
-                  </div>
-                  <button onClick={() => setVisibleWarning(false)} className="mt-2 text-yellow-400/50 hover:text-yellow-400 text-xs font-medium pointer-events-auto">✕ Dismiss</button>
-                </div>
-              </div>
-            )}
-
-            {/* User stopped */}
-            {userStopped && !attemptComplete && isPractice && (
-              <div className="absolute inset-x-0 top-1/3 flex justify-center z-30">
-                <div className="bg-blue-500/20 border border-blue-500/50 backdrop-blur-md px-6 py-4 rounded-2xl text-center space-y-3">
-                  <p className="text-blue-400 font-bold text-lg">🐢 Slow it down?</p>
-                  <p className="text-blue-300/70 text-sm">Taking it slower helps you learn.</p>
-                  <div className="flex gap-3 justify-center">
-                    <button onClick={handleSlowDown} className="bg-blue-500/80 hover:bg-blue-500 text-white font-bold px-6 py-3 rounded-xl transition-colors text-base">
-                      🐢 Yes
-                    </button>
-                    <button onClick={clearUserStopped} className="bg-white/10 hover:bg-white/20 text-white font-bold px-6 py-3 rounded-xl transition-colors text-base">
-                      ▶️ Keep going
-                    </button>
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {/* Frustration avoidance */}
-            {isFrustrated && !attemptComplete && (
-              <div className="absolute inset-x-0 bottom-4 flex justify-center z-30">
-                <div className="bg-orange-500/20 border border-orange-500/40 backdrop-blur-md px-4 py-2 rounded-full text-center">
-                  <p className="text-orange-300 text-sm">💪 Take your time — no rush!</p>
-                </div>
-              </div>
-            )}
-
-            {/* Processing status */}
-            {hasWebcam && isPractice && !attemptComplete && (
-              <div className="absolute top-4 right-4 z-30">
-                <div className={`px-2 py-1 rounded-full text-xs font-bold backdrop-blur-md border flex items-center gap-1.5 ${
-                  processingActive
-                    ? 'bg-green-500/20 border-green-500/30 text-green-300'
-                    : 'bg-yellow-500/20 border-yellow-500/30 text-yellow-300'
-                }`}>
-                  <span className={`w-2 h-2 rounded-full ${processingActive ? 'bg-green-400 animate-pulse' : 'bg-yellow-400'}`} />
-                  {processingActive ? 'Tracking' : 'Starting...'}
-                </div>
-              </div>
-            )}
-
-            {/* No pose data warning */}
-            {hasWebcam && referencePoses.length === 0 && isPractice && !attemptComplete && (
-              <div className="absolute top-16 right-4 z-30">
-                <div className="bg-yellow-500/10 border border-yellow-500/20 backdrop-blur-md px-3 py-2 rounded-xl">
-                  <p className="text-yellow-400/70 text-[10px]">⚠️ No reference poses — scores unavailable</p>
-                </div>
-              </div>
-            )}
-
-            <video
-              ref={webcamRef}
-              className={`w-full h-full object-cover ${isMirrorMode ? 'scale-x-[-1]' : ''}`}
-              playsInline
-              muted
-            />
-
-            <div className={`absolute inset-0 pointer-events-none ${isMirrorMode ? 'scale-x-[-1]' : ''}`}>
-              {userPose && (
-                <SkeletonCanvas
-                  landmarks={userPose}
-                  refLandmarks={currentRefPose}
-                  focusArea={phase as any}
-                  showArrows={isPractice || !!pendingAdjustment}
-                  width={640}
-                  height={480}
-                  jointScores={jointScores.length > 0 ? Object.fromEntries(jointScores.map(j => [JOINT_NAME_TO_IDX[j.name] ?? j.name, j.score])) as any : undefined}
-                />
-              )}
+        {/* Visibility warning — minimal, self-dismissing */}
+        {visibleWarning && !showImprovement && (
+          <div className="absolute bottom-20 left-1/2 -translate-x-1/2 z-30 pointer-events-none">
+            <div className="bg-yellow-500/20 border border-yellow-500/30 backdrop-blur-md px-4 py-2 rounded-full text-center">
+              <p className="text-yellow-300 text-sm font-medium">Step back — show your shoulders</p>
             </div>
-
-            {/* Physical Adjustment Overlay */}
-            {pendingAdjustment && (
-              <div className="absolute inset-x-0 top-1/4 flex justify-center z-40 pointer-events-none">
-                <div className="bg-red-500/20 border border-red-500/50 backdrop-blur-md px-6 py-4 rounded-2xl animate-pulse text-center">
-                  <h3 className="text-red-400 font-bold text-xl mb-1">⏸️ Freeze!</h3>
-                  <p className="text-white text-sm">
-                    Move your <b className="text-red-300">{pendingAdjustment.jointId.replace('_', ' ')}</b> into the green zone.
-                  </p>
-                </div>
-              </div>
-            )}
-
-            <BeatIndicator isPlaying={isPractice && !attemptComplete && !pendingAdjustment} playbackRate={effectivePlaybackRate} />
-
-            {/* Green chime */}
-            {showChime && (
-              <div className="absolute top-4 left-4 z-30 animate-bounce">
-                <div className="bg-green-500/30 border border-green-400/50 backdrop-blur-md px-4 py-2 rounded-full text-center">
-                  <p className="text-green-300 font-bold text-sm">✨ Nice!</p>
-                </div>
-              </div>
-            )}
-
-            {/* Real-time Score Display */}
-            {isPractice && !attemptComplete && (
-              <div className="absolute bottom-16 right-8 z-30">
-                <ScoreDisplay
-                  score={displayScore}
-                  jointAccuracy={{
-                    upperBody: currentArmScore,
-                    lowerBody: currentLegScore,
-                    core: (currentArmScore + currentLegScore) / 2
-                  }}
-                />
-              </div>
-            )}
           </div>
-        </main>
+        )}
+
+        <BeatIndicator isPlaying={isPractice && !attemptComplete} playbackRate={effectivePlaybackRate} />
       </div>
 
       {/* ── Completion AAR overlay (existing, non-improvement) ── */}
