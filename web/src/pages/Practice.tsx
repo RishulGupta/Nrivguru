@@ -4,6 +4,103 @@ import { Loader2, Camera, SkipForward, SkipBack, ChevronLeft, ChevronRight } fro
 import SkeletonCanvas from '../components/SkeletonCanvas';
 import { PreparationTimer } from '../components/PreparationTimer';
 
+// ── ResultsOverlay ─────────────────────────────────────────────────────────────
+// Unified results screen — replaces both Phase Complete overlay and ImprovementPhase.
+// Shows celebration → score → one specific arm fix → two action buttons.
+const JOINT_LABEL: Record<string, string> = {
+  left_shoulder: 'left shoulder', right_shoulder: 'right shoulder',
+  left_elbow: 'left elbow',       right_elbow: 'right elbow',
+  left_wrist: 'left wrist',       right_wrist: 'right wrist',
+};
+const JOINT_FIX: Record<string, string> = {
+  left_shoulder:  'Raise your left shoulder higher',
+  right_shoulder: 'Raise your right shoulder higher',
+  left_elbow:     'Straighten your left arm a bit more',
+  right_elbow:    'Straighten your right arm a bit more',
+  left_wrist:     'Lead with your left wrist',
+  right_wrist:    'Lead with your right wrist',
+};
+
+function ResultsOverlay({ score, prevScore, jointScores, phase, onRetry, onNext, isLastChunk }: {
+  score: FinalScore;
+  prevScore: number | null;
+  jointScores: JointScore[];
+  phase: string;
+  onRetry: () => void;
+  onNext: () => void;
+  isLastChunk: boolean;
+}) {
+  const pct    = Math.round(score.armScore); // arms phase: show arm score prominently
+  const delta  = prevScore !== null ? Math.round(score.overallScore - prevScore) : null;
+  const great  = pct >= 80;
+  const ok     = pct >= 55;
+
+  // One worst arm joint to fix
+  const worstArmJoint = jointScores
+    .filter(j => j.type === 'arm' && j.score >= 0 && JOINT_LABEL[j.name])
+    .sort((a, b) => a.score - b.score)[0];
+
+  return (
+    <div className="fixed inset-0 z-40 bg-black/90 backdrop-blur-sm flex flex-col items-center justify-center p-6 gap-5 animate-in fade-in duration-300">
+
+      {/* Celebration / emoji */}
+      <div className="text-6xl animate-in zoom-in duration-400">
+        {great ? '🔥' : ok ? '💪' : '🌱'}
+      </div>
+
+      {/* Score */}
+      <div className="text-center">
+        <div className={`text-7xl font-bold tabular-nums ${great ? 'text-green-400' : ok ? 'text-violet-400' : 'text-white'}`}>
+          {pct}<span className="text-3xl font-normal text-white/40">%</span>
+        </div>
+        {delta !== null && (
+          <p className={`text-sm font-semibold mt-1 ${delta > 0 ? 'text-green-400' : delta < 0 ? 'text-red-400' : 'text-white/40'}`}>
+            {delta > 0 ? `+${delta}` : delta} pts from last try
+          </p>
+        )}
+        {delta === null && (
+          <p className="text-white/40 text-sm mt-1">
+            {great ? 'Great start!' : ok ? 'Nice effort!' : 'Keep going!'}
+          </p>
+        )}
+      </div>
+
+      {/* One specific fix — only if not great */}
+      {!great && worstArmJoint && (
+        <div className="bg-violet-500/10 border border-violet-500/20 rounded-2xl px-5 py-4 text-center max-w-xs w-full">
+          <p className="text-white/50 text-[10px] uppercase tracking-widest mb-1">One thing to fix</p>
+          <p className="text-white font-medium text-sm">
+            {JOINT_FIX[worstArmJoint.name] ?? `Work on your ${JOINT_LABEL[worstArmJoint.name]}`}
+          </p>
+        </div>
+      )}
+
+      {/* Weaker side — only surface if significant */}
+      {score.weakerSide && (
+        <p className="text-amber-300/70 text-xs">
+          Your {score.weakerSide} side is lagging — focus there
+        </p>
+      )}
+
+      {/* Actions */}
+      <div className="flex gap-3 w-full max-w-xs pt-2">
+        <button
+          onClick={onRetry}
+          className="flex-1 bg-white/10 hover:bg-white/20 text-white font-bold py-4 rounded-2xl transition-all text-base"
+        >
+          🔄 Again
+        </button>
+        <button
+          onClick={onNext}
+          className="flex-1 bg-primary hover:bg-primary/90 text-white font-bold py-4 rounded-2xl transition-all shadow-[0_0_20px_rgba(147,51,234,0.3)] text-base"
+        >
+          {isLastChunk && (phase === 'combine' || phase === 'full') ? '✅ Finish' : '➡️ Next'}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 // Inline micro-components — too small to deserve their own files
 // ponytail: no separate file for 10-line components
 function AmbientScore({ armScore }: { armScore: number }) {
@@ -40,10 +137,9 @@ function ChunkProgressBar({
     </div>
   );
 }
-import { ImprovementPhase } from '../components/ImprovementPhase';
 import { supabase } from '../lib/supabase';
 import { useAuthStore } from '../store/useStore';
-import type { Chunk, Routine, FinalScore } from '@taal/shared/types/routine';
+import type { Chunk, Routine, FinalScore, JointScore } from '@taal/shared/types/routine';
 import type { PoseFrame } from '@taal/shared/types/pose';
 import { usePracticeSession } from '../hooks/usePracticeSession';
 import type { FocusArea } from '@taal/shared/utils/CorrectionEngine';
@@ -131,7 +227,6 @@ export default function Practice() {
   const [attemptComplete, setAttemptComplete] = useState(false);
   const [referencePoses, setReferencePoses] = useState<PoseFrame[]>([]);
   const [keyframes, setKeyframes] = useState<PoseFrame[]>([]);
-  const [showImprovement, setShowImprovement] = useState(false);
   const [showWatchOverlay, setShowWatchOverlay] = useState(false);
 
   // ── Modules ──
@@ -224,7 +319,6 @@ export default function Practice() {
     setCurrentChunkIndex(idx);
     setAttemptComplete(false);
     setFinalScore(null);
-    setShowImprovement(false);
     setShowWatchOverlay(false);
     setProprioQuestion(null);
     lastBreathingCueIndex.current = -1;
@@ -584,16 +678,9 @@ export default function Practice() {
       });
     }
 
-    // Show improvement phase automatically after practice phases
+    // ResultsOverlay is shown automatically when attemptComplete && finalScore
     if (phase === 'combine' || phase === 'full') {
-      setTimeout(() => {
-        sendSessionEvent({ type: 'GO_TO_IMPROVEMENT' });
-        setShowImprovement(true);
-      }, 500);
-    } else if (phase === 'arms') {
-      setTimeout(() => {
-        setShowImprovement(true);
-      }, 500);
+      sendSessionEvent({ type: 'GO_TO_IMPROVEMENT' });
     }
   };
 
@@ -866,52 +953,9 @@ export default function Practice() {
         />
       )}
 
-      {/* ── Improvement Phase (Step 6) ── */}
-      {showImprovement && finalScore && (
-        <ImprovementPhase
-          finalScore={finalScore}
-          referencePoses={referencePoses}
-          userPose={userPose}
-          jointScores={jointScores}
-          chunkIndex={currentChunkIndex}
-          totalChunks={totalChunks}
-          onRetry={() => {
-            setShowImprovement(false);
-            setAttemptComplete(false);
-            setFinalScore(null);
-            if (phase === 'arms') {
-              sendSessionEvent({ type: 'RESTART_CHUNK' });
-            } else {
-              sendSessionEvent({ type: 'RETURN_TO_PRACTICE' });
-            }
-          }}
-          onNextChunk={() => {
-            if (phase === 'arms') {
-              // Advance to legs phase within same chunk
-              setShowImprovement(false);
-              setAttemptComplete(false);
-              setFinalScore(null);
-              sendSessionEvent({ type: 'PHASE_COMPLETE' });
-            } else {
-              nextChunk();
-            }
-          }}
-          onPrevChunk={currentChunkIndex > 0 ? prevChunk : undefined}
-          onFinishSession={handleFinishSession}
-          retryLabel={phase === 'arms' ? '🔄 Try upper body again' : undefined}
-          nextLabel={
-            phase === 'arms'
-              ? isLastChunk
-                ? '✅ Finish session'
-                : '➡️ Next: Legs'
-              : undefined
-          }
-        />
-      )}
-
       {/* ── Top bar (Dynamic Navigation) ── */}
       <header className={`w-full z-50 px-6 py-4 flex items-center justify-between ${
-        isPreparation || showImprovement ? 'hidden' : ''
+        isPreparation ? 'hidden' : ''
       } ${phase === 'teach' ? 'hidden' : ''}`}
         >
           <button
@@ -998,7 +1042,7 @@ export default function Practice() {
         </header>
 
       {/* ── Main area: fullscreen camera + PiP reference ── */}
-      <div className={`flex-1 min-h-0 relative ${showImprovement ? 'hidden' : ''}`}>
+      <div className="flex-1 min-h-0 relative">
 
         {/* Fullscreen user camera */}
         <video
@@ -1090,7 +1134,7 @@ export default function Practice() {
         )}
 
         {/* Visibility warning — minimal, self-dismissing */}
-        {visibleWarning && !showImprovement && (
+        {visibleWarning && (
           <div className="absolute bottom-20 left-1/2 -translate-x-1/2 z-30 pointer-events-none">
             <div className="bg-yellow-500/20 border border-yellow-500/30 backdrop-blur-md px-4 py-2 rounded-full text-center">
               <p className="text-yellow-300 text-sm font-medium">Step back — show your shoulders</p>
@@ -1101,63 +1145,17 @@ export default function Practice() {
         <BeatIndicator isPlaying={isPractice && !attemptComplete} playbackRate={effectivePlaybackRate} />
       </div>
 
-      {/* ── Completion AAR overlay (existing, non-improvement) ── */}
-      {attemptComplete && finalScore && !showImprovement && (
-        <div className="fixed inset-0 z-40 bg-black/85 backdrop-blur-sm flex items-center justify-center p-8">
-          <div className="bg-white/5 backdrop-blur-xl p-8 rounded-3xl border border-white/10 max-w-sm w-full text-center space-y-6">
-            <p className="text-white/60 text-sm uppercase tracking-widest">Phase Complete</p>
-            <div className="text-6xl font-outfit font-bold text-primary neon-text">
-              {Math.round(finalScore.overallScore)}%
-            </div>
-            <div className="flex justify-center gap-6 text-sm mt-2">
-              <div className="text-center">
-                <p className="text-2xl mb-1">💪</p>
-                <p className="text-green-400 font-bold">{Math.round(finalScore.armScore)}%</p>
-              </div>
-              <div className="text-center">
-                <p className="text-2xl mb-1">🦵</p>
-                <p className="text-green-400 font-bold">{Math.round(finalScore.legScore)}%</p>
-              </div>
-              <div className="text-center">
-                <p className="text-2xl mb-1">⏱️</p>
-                <p className="text-green-400 font-bold">{Math.round(finalScore.timingScore)}%</p>
-              </div>
-            </div>
-
-            {/* Weaker side indicator */}
-            {finalScore.weakerSide && (
-              <div className="bg-amber-500/10 border border-amber-500/20 rounded-xl px-4 py-2">
-                <p className="text-amber-300 text-xs font-medium">
-                  ⚠️ Focus on your <b>{finalScore.weakerSide}</b> side
-                </p>
-              </div>
-            )}
-
-            {/* Proprioceptive Questioning */}
-            {proprioQuestion && (
-              <div className="bg-primary/20 border border-primary/40 rounded-xl p-4">
-                <p className="text-white font-medium text-sm">{proprioQuestion}</p>
-                <div className="flex gap-2 mt-3">
-                  <button onClick={() => setProprioQuestion(null)} className="flex-1 bg-white/10 hover:bg-white/20 text-white text-xs py-2 rounded-lg transition-colors">
-                    Not really
-                  </button>
-                  <button onClick={() => setProprioQuestion(null)} className="flex-1 bg-primary/80 hover:bg-primary text-white text-xs py-2 rounded-lg transition-colors">
-                    Yes! 👍
-                  </button>
-                </div>
-              </div>
-            )}
-
-            <div className="flex gap-3 pt-4">
-              <button onClick={handleRetry} className="flex-1 bg-white/10 hover:bg-white/20 text-white font-bold py-3 rounded-xl transition-all text-base">
-                🔄 Again
-              </button>
-              <button onClick={handleNextPhase} className="flex-1 bg-primary hover:bg-primary/90 text-white font-bold py-3 rounded-xl transition-all shadow-[0_0_15px_rgba(147,51,234,0.3)] text-base">
-                {phase === 'combine' || phase === 'full' ? '🤖 Improve' : '➡️ Next'}
-              </button>
-            </div>
-          </div>
-        </div>
+      {/* ── Unified results overlay — shown after every scored attempt ── */}
+      {attemptComplete && finalScore && (
+        <ResultsOverlay
+          score={finalScore}
+          prevScore={savedScores.length >= 2 ? savedScores[savedScores.length - 2] : null}
+          jointScores={jointScores}
+          phase={phase}
+          onRetry={handleRetry}
+          onNext={handleNextPhase}
+          isLastChunk={isLastChunk}
+        />
       )}
     </div>
   );
