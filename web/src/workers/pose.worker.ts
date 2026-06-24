@@ -187,15 +187,8 @@ async function processNextFrame() {
       if (result.landmarks?.length > 0) {
         rawLandmarks = result.landmarks[0];
       }
-    } else {
-      // Graceful degradation: synthesize from reference for testing
-      const ref = referencePoses.find(r => r.timestamp_ms >= timestamp) ?? referencePoses.at(-1);
-      if (ref?.landmarks) {
-        rawLandmarks = JSON.parse(JSON.stringify(ref.landmarks));
-        // Inject a deliberate small error to exercise the pipeline
-        if (rawLandmarks[11]) rawLandmarks[11].y -= 0.12;
-      }
     }
+    // If landmarker not ready: return null — never synthesise fake poses (causes ghost skeleton)
 
     bitmap.close();
 

@@ -96,9 +96,30 @@ export default function RoutineDetail() {
         </div>
 
         <div className="space-y-4">
+          {/* Segment 0 — Warm Up (always first) */}
+          <div
+            className="glass p-6 rounded-2xl border border-emerald-500/20 hover:border-emerald-500/50 transition-all flex items-center justify-between group cursor-pointer"
+            onClick={() => navigate(`/warmup/${routine.id}/full`)}
+          >
+            <div className="flex items-center gap-6">
+              <div className="w-12 h-12 bg-emerald-500/10 rounded-xl flex items-center justify-center font-bold text-xl text-emerald-400 group-hover:bg-emerald-500/20 transition-colors">
+                0
+              </div>
+              <div>
+                <h3 className="text-lg font-bold text-white group-hover:text-emerald-400 transition-colors">
+                  🏋️ Warm Up
+                </h3>
+                <p className="text-sm text-muted-foreground">5 exercises · ~1 min · Do this first</p>
+              </div>
+            </div>
+            <div className="w-10 h-10 rounded-full bg-emerald-500/10 flex items-center justify-center group-hover:bg-emerald-500/30 transition-colors">
+              <Play className="w-4 h-4 text-emerald-400 ml-0.5" />
+            </div>
+          </div>
+
           {routine.chunks.map((chunk: any, index: number) => (
-            <div 
-              key={chunk.id} 
+            <div
+              key={chunk.id}
               className="glass p-6 rounded-2xl border border-white/5 hover:border-primary/50 transition-all flex items-center justify-between group cursor-pointer"
               onClick={() => navigate(`/segment-phases/${routine.id}/${chunk.id || chunk.chunk_index}`)}
             >

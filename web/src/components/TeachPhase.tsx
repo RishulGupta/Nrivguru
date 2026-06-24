@@ -14,8 +14,9 @@ interface TeachPhaseProps {
 }
 
 // ─── Body Diagram ─────────────────────────────────────────────────────────────
-// Draws a clear cartoon-style human figure with highlighted arm positions.
-// Much more recognisable than raw landmark sticks for a beginner.
+// Draws a filled "gingerbread person" figure — recognisable as human, not a stick figure.
+// Head = filled circle, torso = rounded rectangle, limbs = thick rounded capsule shapes.
+// Arms are large and coloured: left arm = purple, right arm = green.
 function BodyDiagram({
   landmarks,
   width,
@@ -37,156 +38,127 @@ function BodyDiagram({
 
     ctx.clearRect(0, 0, width, height);
 
+    const lm = landmarks;
+    const vis = (idx: number) => (lm[idx]?.visibility ?? 0) > 0.25;
+
     const px = (x: number) => x * width;
     const py = (y: number) => y * height;
 
-    const lm = landmarks;
-    const vis = (idx: number) => (lm[idx]?.visibility ?? 0) > 0.3;
+    // Helper — draw a filled "capsule" (line with round caps) representing a limb
+    const capsule = (x1: number, y1: number, x2: number, y2: number, r: number, color: string, alpha = 1) => {
+      ctx.save();
+      ctx.globalAlpha = alpha;
+      ctx.strokeStyle = color;
+      ctx.lineWidth   = r * 2;
+      ctx.lineCap     = 'round';
+      ctx.shadowBlur  = 0;
+      ctx.beginPath();
+      ctx.moveTo(x1, y1);
+      ctx.lineTo(x2, y2);
+      ctx.stroke();
+      ctx.restore();
+    };
 
-    // ── Draw full body silhouette first (dark gray background figure) ──────────
-    // We draw a simple cartoon body: head + torso + limbs
-    // then overlay the actual landmark data on top
-
-    // Helper: midpoint
-    const mid = (a: number, b: number, dim: 'x' | 'y') =>
-      ((lm[a]?.[dim] ?? 0.5) + (lm[b]?.[dim] ?? 0.5)) / 2;
-
-    // Body reference points
-    const lSh  = lm[11], rSh  = lm[12];
-    const lEl  = lm[13], rEl  = lm[14];
-    const lWr  = lm[15], rWr  = lm[16];
+    const lSh = lm[11], rSh = lm[12];
+    const lEl = lm[13], rEl = lm[14];
+    const lWr = lm[15], rWr = lm[16];
     const lHip = lm[23], rHip = lm[24];
-    const lKn  = lm[25], rKn  = lm[26];
-    const lAn  = lm[27], rAn  = lm[28];
+    const lKn = lm[25],  rKn = lm[26];
+    const lAn = lm[27],  rAn = lm[28];
     const nose = lm[0];
 
-    const shCX = mid(11, 12, 'x');
-    const shCY = mid(11, 12, 'y');
-    const hipCX = mid(23, 24, 'x');
-    const hipCY = mid(23, 24, 'y');
+    // Dimensions
+    const armW  = Math.max(8, width * 0.055); // capsule half-radius for arms
+    const limbW = Math.max(5, width * 0.035); // legs / torso
+    const bodyGray = 'rgba(255,255,255,0.18)';
+    const leftColor  = '#a78bfa'; // purple
+    const rightColor = '#34d399'; // green
 
-    // ── 1. Body silhouette (torso + head + legs) in dark gray ───────────────
-    ctx.save();
-    ctx.strokeStyle = 'rgba(255,255,255,0.15)';
-    ctx.fillStyle   = 'rgba(255,255,255,0.06)';
-    ctx.lineWidth   = 4;
-    ctx.lineCap     = 'round';
-    ctx.lineJoin    = 'round';
-
-    // Torso
+    // ── 1. Gray body outline (torso + legs — background layer) ──────────────
     if (lSh && rSh && lHip && rHip) {
-      ctx.beginPath();
-      ctx.moveTo(px(lSh.x),  py(lSh.y));
-      ctx.lineTo(px(rSh.x),  py(rSh.y));
-      ctx.lineTo(px(rHip.x), py(rHip.y));
-      ctx.lineTo(px(lHip.x), py(lHip.y));
-      ctx.closePath();
-      ctx.fill();
-      ctx.stroke();
+      const torsoX = (px(lSh.x) + px(rSh.x) + px(lHip.x) + px(rHip.x)) / 4;
+      const torsoY = (py(lSh.y) + py(rSh.y)) / 2;
+      const torsoBotY = (py(lHip.y) + py(rHip.y)) / 2;
+      // Torso as a single capsule from shoulders to hips
+      capsule(torsoX, torsoY, torsoX, torsoBotY, limbW * 1.6, bodyGray);
     }
-
-    // Head (circle around nose)
-    if (nose) {
-      const headR = Math.abs((lSh?.y ?? shCY) - (nose?.y ?? shCY)) * height * 0.45;
-      ctx.beginPath();
-      ctx.arc(px(nose.x), py(nose.y), Math.max(headR, 12), 0, Math.PI * 2);
-      ctx.stroke();
-    }
-
-    // Legs (subtle)
+    // Legs
     for (const [a, b] of [[23, 25], [25, 27], [24, 26], [26, 28]] as [number, number][]) {
-      if (!lm[a] || !lm[b]) continue;
-      ctx.beginPath();
-      ctx.moveTo(px(lm[a].x), py(lm[a].y));
-      ctx.lineTo(px(lm[b].x), py(lm[b].y));
-      ctx.stroke();
-    }
-    ctx.restore();
-
-    // ── 2. Arms — bright, thick, prominent ──────────────────────────────────
-    ctx.save();
-    ctx.lineCap = 'round';
-
-    const ARM_SEGMENTS: [number, number, string][] = [
-      [11, 13, 'left'],   // L upper arm
-      [13, 15, 'left'],   // L forearm
-      [12, 14, 'right'],  // R upper arm
-      [14, 16, 'right'],  // R forearm
-    ];
-
-    for (const [i, j, side] of ARM_SEGMENTS) {
-      if (!lm[i] || !lm[j]) continue;
-      if (!vis(i) || !vis(j)) continue;
-
-      const color = side === 'left' ? '#a78bfa' : '#34d399'; // purple=left, green=right
-      const glow  = side === 'left' ? 'rgba(167,139,250,0.4)' : 'rgba(52,211,153,0.4)';
-
-      // Glow layer
-      ctx.shadowBlur   = 18;
-      ctx.shadowColor  = glow;
-      ctx.strokeStyle  = color;
-      ctx.lineWidth    = 10;
-      ctx.globalAlpha  = 0.5;
-      ctx.beginPath();
-      ctx.moveTo(px(lm[i].x), py(lm[i].y));
-      ctx.lineTo(px(lm[j].x), py(lm[j].y));
-      ctx.stroke();
-
-      // Solid layer
-      ctx.shadowBlur  = 0;
-      ctx.globalAlpha = 1;
-      ctx.lineWidth   = 6;
-      ctx.beginPath();
-      ctx.moveTo(px(lm[i].x), py(lm[i].y));
-      ctx.lineTo(px(lm[j].x), py(lm[j].y));
-      ctx.stroke();
+      if (!lm[a] || !lm[b] || !vis(a) || !vis(b)) continue;
+      capsule(px(lm[a].x), py(lm[a].y), px(lm[b].x), py(lm[b].y), limbW, bodyGray);
     }
 
-    // ── 3. Joint dots on arms ───────────────────────────────────────────────
-    const ARM_JOINTS: [number, string][] = [
-      [11, '#a78bfa'], [13, '#a78bfa'], [15, '#a78bfa'],
-      [12, '#34d399'], [14, '#34d399'], [16, '#34d399'],
-    ];
-    for (const [idx, color] of ARM_JOINTS) {
-      const p = lm[idx];
-      if (!p || !vis(idx)) continue;
-      ctx.shadowBlur  = 10;
-      ctx.shadowColor = color;
-      ctx.fillStyle   = '#fff';
-      ctx.beginPath();
-      ctx.arc(px(p.x), py(p.y), 5, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.shadowBlur = 0;
+    // ── 2. Left arm — PURPLE ─────────────────────────────────────────────────
+    if (lSh && lEl && vis(11) && vis(13)) {
+      // Glow
+      ctx.save();
+      ctx.shadowBlur  = 20; ctx.shadowColor = leftColor;
+      ctx.strokeStyle = leftColor; ctx.lineWidth = armW * 2; ctx.lineCap = 'round';
+      ctx.globalAlpha = 0.25;
+      ctx.beginPath(); ctx.moveTo(px(lSh.x), py(lSh.y)); ctx.lineTo(px(lEl.x), py(lEl.y)); ctx.stroke();
+      ctx.restore();
+      capsule(px(lSh.x), py(lSh.y), px(lEl.x), py(lEl.y), armW, leftColor);
+    }
+    if (lEl && lWr && vis(13) && vis(15)) {
+      capsule(px(lEl.x), py(lEl.y), px(lWr.x), py(lWr.y), armW * 0.85, leftColor);
     }
 
-    // ── 4. Labels: LEFT / RIGHT on shoulders ───────────────────────────────
+    // ── 3. Right arm — GREEN ─────────────────────────────────────────────────
+    if (rSh && rEl && vis(12) && vis(14)) {
+      ctx.save();
+      ctx.shadowBlur  = 20; ctx.shadowColor = rightColor;
+      ctx.strokeStyle = rightColor; ctx.lineWidth = armW * 2; ctx.lineCap = 'round';
+      ctx.globalAlpha = 0.25;
+      ctx.beginPath(); ctx.moveTo(px(rSh.x), py(rSh.y)); ctx.lineTo(px(rEl.x), py(rEl.y)); ctx.stroke();
+      ctx.restore();
+      capsule(px(rSh.x), py(rSh.y), px(rEl.x), py(rEl.y), armW, rightColor);
+    }
+    if (rEl && rWr && vis(14) && vis(16)) {
+      capsule(px(rEl.x), py(rEl.y), px(rWr.x), py(rWr.y), armW * 0.85, rightColor);
+    }
+
+    // ── 4. Filled head circle ─────────────────────────────────────────────────
+    if (nose && vis(0)) {
+      const headR = lSh ? Math.max(14, Math.abs(py(lSh.y) - py(nose.y)) * 0.5) : 20;
+      ctx.save();
+      ctx.fillStyle = 'rgba(255,255,255,0.20)';
+      ctx.strokeStyle = 'rgba(255,255,255,0.30)';
+      ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.arc(px(nose.x), py(nose.y), headR, 0, Math.PI * 2);
+      ctx.fill(); ctx.stroke();
+      // Simple face dots
+      ctx.fillStyle = 'rgba(255,255,255,0.5)';
+      ctx.beginPath(); ctx.arc(px(nose.x) - headR * 0.28, py(nose.y) - headR * 0.1, 2, 0, Math.PI * 2); ctx.fill();
+      ctx.beginPath(); ctx.arc(px(nose.x) + headR * 0.28, py(nose.y) - headR * 0.1, 2, 0, Math.PI * 2); ctx.fill();
+      ctx.restore();
+    }
+
+    // ── 5. Labels ───────────────────────────────────────────────────────────
+    const fontSize = Math.max(11, Math.round(width * 0.042));
+    ctx.font    = `bold ${fontSize}px sans-serif`;
+    ctx.textAlign = 'center';
     if (lSh && vis(11)) {
-      ctx.fillStyle   = '#a78bfa';
-      ctx.font        = `bold ${Math.round(width * 0.04)}px sans-serif`;
-      ctx.textAlign   = 'center';
-      ctx.globalAlpha = 0.9;
-      ctx.fillText('LEFT', px(lSh.x), py(lSh.y) - 14);
+      ctx.fillStyle = leftColor;
+      ctx.fillText('LEFT', px(lSh.x), py(lSh.y) - armW - 6);
     }
     if (rSh && vis(12)) {
-      ctx.fillStyle   = '#34d399';
-      ctx.font        = `bold ${Math.round(width * 0.04)}px sans-serif`;
-      ctx.textAlign   = 'center';
-      ctx.globalAlpha = 0.9;
-      ctx.fillText('RIGHT', px(rSh.x), py(rSh.y) - 14);
+      ctx.fillStyle = rightColor;
+      ctx.fillText('RIGHT', px(rSh.x), py(rSh.y) - armW - 6);
     }
 
-    ctx.restore();
-
-    // ── 5. Step label overlay ───────────────────────────────────────────────
+    // ── 6. Step label pill ───────────────────────────────────────────────────
     if (label) {
+      const lw = ctx.measureText(label).width + 24;
+      const lx = width / 2 - lw / 2;
       ctx.save();
-      ctx.fillStyle   = 'rgba(0,0,0,0.55)';
-      ctx.roundRect?.(12, height - 42, label.length * 8 + 20, 30, 8);
+      ctx.fillStyle = 'rgba(0,0,0,0.6)';
+      ctx.beginPath();
+      ctx.roundRect?.(lx, height - 38, lw, 26, 13);
       ctx.fill();
-      ctx.fillStyle   = 'rgba(255,255,255,0.85)';
-      ctx.font        = `600 ${Math.round(width * 0.038)}px sans-serif`;
-      ctx.textAlign   = 'left';
-      ctx.fillText(label, 22, height - 22);
+      ctx.fillStyle = 'rgba(255,255,255,0.80)';
+      ctx.font = `600 ${fontSize}px sans-serif`;
+      ctx.textAlign = 'center';
+      ctx.fillText(label, width / 2, height - 20);
       ctx.restore();
     }
   }, [landmarks, width, height, label]);

@@ -1,15 +1,19 @@
 import { useMachine } from '@xstate/react';
 import { setup } from 'xstate';
 
+export type PracticeMode = 'full_body' | 'upper_body' | 'lower_body' | 'full_speed';
+
 export const lessonMachine = setup({
   types: {
     context: {} as {
       chunkIndex: number;
       attemptCount: number;
       isSeatedMode: boolean;
+      mode: PracticeMode;
     },
     events: {} as
       | { type: 'START_CHUNK'; chunkIndex: number }
+      | { type: 'SET_MODE'; mode: PracticeMode }
       | { type: 'PHASE_COMPLETE' }
       | { type: 'PREPARATION_DONE' }
       | { type: 'GO_TO_IMPROVEMENT' }
@@ -33,18 +37,31 @@ export const lessonMachine = setup({
   context: {
     chunkIndex: 0,
     attemptCount: 0,
-    isSeatedMode: false
+    isSeatedMode: false,
+    mode: 'full_body'
   },
   states: {
     idle: {
       on: {
-        START_CHUNK: {
-          target: 'teach',
-          actions: [
-            ({ context, event }) => { context.chunkIndex = event.chunkIndex; },
-            'resetAttempt'
-          ]
-        }
+        SET_MODE: {
+          actions: ({ context, event }) => { context.mode = event.mode; }
+        },
+        START_CHUNK: [
+          {
+            guard: ({ context }) => context.mode === 'full_speed',
+            target: 'prep_full',
+            actions: [({ context, event }) => { context.chunkIndex = event.chunkIndex; }, 'resetAttempt']
+          },
+          {
+            guard: ({ context }) => context.mode === 'lower_body',
+            target: 'prep_legs',
+            actions: [({ context, event }) => { context.chunkIndex = event.chunkIndex; }, 'resetAttempt']
+          },
+          {
+            target: 'teach',
+            actions: [({ context, event }) => { context.chunkIndex = event.chunkIndex; }, 'resetAttempt']
+          }
+        ]
       }
     },
     teach: {
@@ -96,10 +113,17 @@ export const lessonMachine = setup({
     arms: {
       // Step 3: Arms focus, 0.5x speed, dim lower body
       on: {
-        PHASE_COMPLETE: {
-          target: 'prep_legs',
-          actions: 'incrementAttempt'
-        },
+        PHASE_COMPLETE: [
+          {
+            guard: ({ context }) => context.mode === 'upper_body',
+            target: 'improvement',
+            actions: 'incrementAttempt'
+          },
+          {
+            target: 'prep_legs',
+            actions: 'incrementAttempt'
+          }
+        ],
         PREV_PHASE: 'watch',
         RESTART_CHUNK: 'prep_arms'
       }
@@ -111,10 +135,17 @@ export const lessonMachine = setup({
         target: 'prep_combine'
       },
       on: {
-        PHASE_COMPLETE: {
-          target: 'prep_combine',
-          actions: 'incrementAttempt'
-        },
+        PHASE_COMPLETE: [
+          {
+            guard: ({ context }) => context.mode === 'lower_body',
+            target: 'improvement',
+            actions: 'incrementAttempt'
+          },
+          {
+            target: 'prep_combine',
+            actions: 'incrementAttempt'
+          }
+        ],
         PREV_PHASE: 'prep_arms',
         RESTART_CHUNK: 'prep_legs'
       }
@@ -148,15 +179,23 @@ export const lessonMachine = setup({
     improvement: {
       // Step 6: AI Coach — after-action review, coaching, proprioception
       on: {
-        RETURN_TO_PRACTICE: {
-          // Go back to the practice phase for another try
-          target: 'prep_combine'
-        },
-        PREV_PHASE: 'combine'
+        RETURN_TO_PRACTICE: [
+          { guard: ({ context }) => context.mode === 'upper_body', target: 'prep_arms' },
+          { guard: ({ context }) => context.mode === 'lower_body', target: 'prep_legs' },
+          { guard: ({ context }) => context.mode === 'full_speed', target: 'prep_full' },
+          { target: 'prep_combine' }
+        ],
+        PREV_PHASE: [
+          { guard: ({ context }) => context.mode === 'full_body', target: 'combine' },
+          { target: 'improvement' }
+        ]
       }
     }
   },
   on: {
+    SET_MODE: {
+      actions: ({ context, event }) => { context.mode = event.mode; }
+    },
     TOGGLE_SEATED: {
       actions: ({ context }) => { context.isSeatedMode = !context.isSeatedMode; }
     },
@@ -175,7 +214,7 @@ export function usePracticeSession() {
   const [state, send] = useMachine(lessonMachine);
 
   const phase = state.value as string;
-  const { chunkIndex, attemptCount, isSeatedMode } = state.context;
+  const { chunkIndex, attemptCount, isSeatedMode, mode } = state.context;
 
   // Is this a preparation phase?
   const isPreparation = phase === 'prep_arms' || phase === 'prep_legs' ||
@@ -196,11 +235,11 @@ export function usePracticeSession() {
                     'full' as const;
 
   // Phase label for display
-  const phaseLabel = phase === 'teach' ? '👀 Watch' :
-                     phase === 'watch' ? '👀 Watch' :
-                     phase === 'prep_arms' || phase === 'arms' ? '💪 Arms' :
+  const phaseLabel = phase === 'teach' ? '👀 Study the Moves' :
+                     phase === 'watch' ? '👀 Watch & Learn' :
+                     phase === 'prep_arms' || phase === 'arms' ? '💪 Upper Body' :
                      phase === 'prep_legs' || phase === 'legs' ? '🦵 Legs' :
-                     phase === 'prep_combine' || phase === 'combine' ? '🕺 Both' :
+                     phase === 'prep_combine' || phase === 'combine' ? '🕺 Put It Together' :
                      phase === 'prep_full' || phase === 'full' ? '⚡ Full Speed' :
                      phase === 'improvement' ? '🤖 AI Coach' : '';
 
@@ -210,6 +249,7 @@ export function usePracticeSession() {
     chunkIndex,
     attemptCount,
     isSeatedMode,
+    mode,
     playbackRate,
     focusArea,
     isPreparation,

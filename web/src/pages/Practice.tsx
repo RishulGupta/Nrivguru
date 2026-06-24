@@ -189,7 +189,6 @@ export default function Practice() {
 
   // ── Chunk loop ──
   const [currentChunkIndex, setCurrentChunkIndex] = useState(0);
-  const [showWarmUpPrompt, setShowWarmUpPrompt] = useState(false);
 
   // If SegmentPhases passed a mode via location state, skip the selector entirely
   const locationState = (useLocation().state as any) ?? {};
@@ -394,28 +393,18 @@ export default function Practice() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // ── Session memory & warm-up prompt ──
-  const warmupDone = locationState?.warmupDone;
+  // ── Session memory (welcome back cue only — no warm-up prompt) ──
   useEffect(() => {
-    if (routine) {
-      // If user just came from warm-up page, skip the prompt
-      if (warmupDone) {
-        setShowWarmUpPrompt(false);
-        return;
+    if (!routine || locationState?.skipModeSelector) return;
+    sessionMemory.getLastSessionForRoutine(routine.id).then(lastSession => {
+      if (lastSession?.worstJoints?.length > 0) {
+        speechManager.speak(
+          `Welcome back! Let's work on those ${lastSession.worstJoints[0].jointId.replace('_', ' ')}s.`,
+          'normal',
+        );
       }
-      sessionMemory.getLastSessionForRoutine(routine.id).then(lastSession => {
-        if (lastSession && lastSession.worstJoints.length > 0) {
-          speechManager.speak(
-            `Welcome back! Let's focus on those ${lastSession.worstJoints[0].jointId.replace('_', ' ')}s today.`,
-            "normal"
-          );
-        } else {
-          // No prior session — suggest warm-up (Step 0)
-          setShowWarmUpPrompt(true);
-        }
-      });
-    }
-  }, [routine]);
+    });
+  }, [routine]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Switch chunk ──
   const switchToChunk = useCallback((chunks: Chunk[], idx: number) => {
@@ -521,14 +510,14 @@ export default function Practice() {
 
   // ── Camera init when warm-up/mode-selector dismissed ──
   useEffect(() => {
-    if (showWarmUpPrompt || showModeSelector) return;
+    if (showModeSelector) return;
     let active = true;
     (async () => {
       if (!active) return;
       await setupCamera();
     })();
     return () => { active = false; };
-  }, [showWarmUpPrompt, showModeSelector, setupCamera]);
+  }, [showModeSelector, setupCamera]);
 
   // ── Effective playback rate ──
   // Arms phase always 0.5×; DifficultyScaler only applies in full phase
@@ -571,6 +560,8 @@ export default function Practice() {
 
     v.src = videoSrc;
     v.playbackRate = effectivePlaybackRate;
+    // Seek immediately so even if metadata fires late the video is at the right position
+    v.currentTime = startMs / 1000;
 
     const onLoadedMetadata = () => {
       v.currentTime = startMs / 1000;
@@ -932,74 +923,19 @@ export default function Practice() {
   const hasAllChunks = _allChunks.length > 0;
 
   // ── Warm-up prompt (only before first segment) ──
-  const [showSkipConfirm, setShowSkipConfirm] = useState(false);
 
-  // ── Practice mode selector (after warm-up, before practice) ──
-  if (showModeSelector && !showWarmUpPrompt) {
+  // Mode selector — only shown if user arrives directly (not via SegmentPhases)
+  if (showModeSelector) {
     return (
       <div className="min-h-screen bg-black flex flex-col items-center justify-center p-6">
         <PracticeModeSelector
           onSelect={(selectedMode) => {
             sendSessionEvent({ type: 'SET_MODE', mode: selectedMode });
             setShowModeSelector(false);
-            // Camera setup + start practice
             setupCamera();
           }}
-          onCancel={() => setShowWarmUpPrompt(true)}
+          onCancel={() => navigate(-1)}
         />
-      </div>
-    );
-  }
-
-  if (showWarmUpPrompt && !loadingData && currentChunkIndex === 0) {
-    return (
-      <div className="min-h-screen bg-black flex items-center justify-center p-6">
-        <div className="bg-black/60 backdrop-blur-xl border border-white/10 p-8 rounded-3xl max-w-md w-full text-center shadow-2xl space-y-6 animate-in fade-in zoom-in duration-500">
-          <p className="text-5xl">🏋️</p>
-          <h1 className="text-3xl font-outfit font-bold text-white">Warm up first?</h1>
-          <p className="text-gray-400 text-sm">
-            A quick 1-minute warm-up helps prevent injuries and calibrates your camera tracking.
-          </p>
-
-          {showSkipConfirm ? (
-            <div className="space-y-4 pt-4">
-              <p className="text-yellow-400 text-sm font-medium">Are you sure you want to skip the warm-up?</p>
-              <div className="flex gap-3">
-                <button
-                  onClick={() => {
-                    setShowSkipConfirm(false);
-                    setShowWarmUpPrompt(false);
-                    setShowModeSelector(true);
-                  }}
-                  className="flex-1 py-3 bg-red-500/20 hover:bg-red-500/30 text-red-300 border border-red-500/30 rounded-xl font-medium transition-all text-sm"
-                >
-                  Yes, skip
-                </button>
-                <button
-                  onClick={() => setShowSkipConfirm(false)}
-                  className="flex-1 py-3 bg-white/10 hover:bg-white/20 text-white rounded-xl font-medium transition-all text-sm"
-                >
-                  No, go back
-                </button>
-              </div>
-            </div>
-          ) : (
-            <div className="flex flex-col gap-3 pt-4">
-              <button
-                onClick={() => navigate(`/warmup/${id}/${chunk?.chunk_index || 'full'}`)}
-                className="w-full py-4 bg-primary hover:bg-primary/90 text-white rounded-xl font-bold shadow-[0_0_20px_rgba(147,51,234,0.4)] transition-all text-lg"
-              >
-                🔥 Start warm-up
-              </button>
-              <button
-                onClick={() => setShowSkipConfirm(true)}
-                className="w-full py-4 bg-white/5 hover:bg-white/10 text-gray-300 rounded-xl font-medium transition-all text-base"
-              >
-                ⏭️ Skip — I'm ready
-              </button>
-            </div>
-          )}
-        </div>
       </div>
     );
   }
