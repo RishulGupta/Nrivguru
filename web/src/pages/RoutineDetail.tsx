@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { ArrowLeft, Play, Zap, Music, Eye } from 'lucide-react';
+import { ArrowLeft, Play, Zap, Music, Eye, Video } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 import { useAuthStore } from '../store/useStore';
 
@@ -495,6 +495,23 @@ export default function RoutineDetail() {
             navigate={navigate}
           />
         )}
+
+        {/* Record Performance Take — step 10 (optional) */}
+        <button
+          onClick={() => navigate(`/practice/${routine.id}/full`, {
+            state: {
+              performanceTakeMode: true,
+              skipModeSelector:    true,
+              startTimeMs:         0,
+              endTimeMs:           (routine.duration_seconds ?? 0) * 1000,
+              title:               routine.title,
+            },
+          })}
+          className="w-full bg-white/4 hover:bg-white/8 border border-white/8 hover:border-white/15 text-white/60 font-semibold py-3.5 rounded-2xl transition-all flex items-center justify-center gap-2"
+        >
+          <Video className="w-4 h-4 text-red-400" />
+          Record Performance Take
+        </button>
 
         {/* Full Run-Through — step 9 of class model */}
         <button
