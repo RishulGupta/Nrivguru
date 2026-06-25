@@ -176,6 +176,8 @@ import { countingSystem } from '@taal/shared/utils/CountingSystem';
 import { TeachPhase } from '../components/TeachPhase';
 import { StickmanCanvas, usePoseReplay } from '../components/StickmanCanvas';
 import { PracticeModeSelector } from '../components/PracticeModeSelector';
+import { PreviewMode } from '../components/PreviewMode';
+import { FullRunThrough } from '../components/FullRunThrough';
 import { extractKeyframes } from '@taal/shared/utils/KeyframeExtractor';
 import { BeatIndicator } from '../components/BeatIndicator';
 import { TeacherPersonality } from '@taal/shared/utils/TeacherPersonality';
@@ -980,6 +982,45 @@ export default function Practice() {
   const totalChunks = _allChunks.length || 1;
   const isLastChunk = currentChunkIndex >= totalChunks - 1;
   const hasAllChunks = _allChunks.length > 0;
+
+  // ── Preview mode (step 2) — full choreo, full speed, with music, no loop ─────
+  if (locationState?.previewMode) {
+    const videoSrc = getOriginalVideoUrl() || routine?.video_blob_url || '';
+    return (
+      <PreviewMode
+        videoSrc={videoSrc}
+        startTimeMs={locationState.startTimeMs ?? 0}
+        endTimeMs={locationState.endTimeMs ?? 0}
+        title={locationState.title ?? routine?.title}
+        onClose={() => navigate(-1)}
+        onStartLearning={() => navigate(`/routine/${id}`)}
+      />
+    );
+  }
+
+  // ── Full run-through (step 9) — auto-loop entire routine, slow→full speed ────
+  if (locationState?.fullRunMode) {
+    const videoSrc = getOriginalVideoUrl() || routine?.video_blob_url || '';
+    return (
+      <FullRunThrough
+        videoSrc={videoSrc}
+        startTimeMs={locationState.startTimeMs ?? 0}
+        endTimeMs={locationState.endTimeMs ?? 0}
+        bpm={locationState.bpm}
+        rangeCounts={locationState.rangeCounts}
+        referencePoses={referencePoses}
+        poseDetection={isWorkerReady ? {
+          isWorkerReady,
+          jointScores,
+          loadReference,
+          processFrame,
+          finishAttempt,
+          webcamRef,
+        } : undefined}
+        onClose={() => navigate(-1)}
+      />
+    );
+  }
 
   // ── Beat-based drill loop (Step 5+) ──────────────────────────────────────────
   // When RoutineDetail passes a beatRange in location state, render DrillLoop
