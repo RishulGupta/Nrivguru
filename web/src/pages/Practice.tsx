@@ -995,6 +995,8 @@ export default function Practice() {
         beatRange={beatRange}
         bpm={bpm}
         rangeCounts={locationState?.rangeCounts}
+        connectMode={locationState?.connectMode ?? false}
+        boundaryTimeMs={locationState?.boundaryTimeMs ?? []}
         referencePoses={referencePoses}
         poseDetection={isWorkerReady ? {
           isWorkerReady,
