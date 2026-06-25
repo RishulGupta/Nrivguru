@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: taal-beat-detector
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: starter
+    healthCheckPath: /health
+    envVars:
+      - key: BEAT_API_KEY
+        generateValue: true
+      - key: ALLOWED_ORIGINS
+        value: "https://your-taal-domain.com"

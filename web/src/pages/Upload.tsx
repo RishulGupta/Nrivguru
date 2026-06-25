@@ -10,6 +10,7 @@ import {
 import { supabase } from '../lib/supabase';
 import { useAuthStore } from '../store/useStore';
 import { setOriginalVideo, getOriginalVideoUrl } from '../utils/videoStore';
+import { detectBeats, beatGridToChunks, type BeatGrid } from '../utils/beatDetector';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -34,9 +35,9 @@ interface PipelineStage {
 }
 
 const STAGES: PipelineStage[] = [
-  { key: 'UPLOADING',      label: 'Reading video',       emoji: '🎬', startPct: 0,  endPct: 15  },
-  { key: 'CHUNKING',       label: 'Splitting into moves',emoji: '✂️', startPct: 15, endPct: 38  },
-  { key: 'ANALYZING_POSE', label: 'Analysing poses',     emoji: '🦴', startPct: 38, endPct: 80  },
+  { key: 'UPLOADING',      label: 'Reading video',       emoji: '🎬', startPct: 0,  endPct: 12  },
+  { key: 'BEAT_DETECT',    label: 'Finding the beat',    emoji: '🥁', startPct: 12, endPct: 30  },
+  { key: 'ANALYZING_POSE', label: 'Analysing poses',     emoji: '🦴', startPct: 30, endPct: 80  },
   { key: 'SAVING',         label: 'Saving routine',      emoji: '💾', startPct: 80, endPct: 100 },
 ];
 
@@ -456,23 +457,44 @@ export default function Upload() {
       }
       setProgress(15);
 
-      // ── 3. AI chunking ───────────────────────────────────────────────────
-      setPipelineState('CHUNKING');
-      setProgress(18);
+      // ── 3. Beat detection (primary) + AI chunking fallback ───────────────
+      setPipelineState('BEAT_DETECT');
+      setProgress(13);
       const dur = videoDuration || await new Promise<number>((res) => {
         const v = document.createElement('video');
         v.src = URL.createObjectURL(videoFile);
         v.onloadedmetadata = () => { res(v.duration); URL.revokeObjectURL(v.src); };
       });
-      const chunksData = await chunkVideoWithAI(videoFile, dur, styleTag);
+      const durMs = Math.round(dur * 1000);
+
+      let beatGrid: BeatGrid | null = null;
+      let chunksData: any[];
+
+      try {
+        beatGrid = await detectBeats(videoFile, 8, signal);
+      } catch (beatErr) {
+        console.warn('Beat detection failed — falling back to AI chunking:', beatErr);
+      }
+
       if (signal.aborted) throw new DOMException('Cancelled', 'AbortError');
-      setProgress(38);
+
+      if (beatGrid && beatGrid.chunks.length > 0) {
+        chunksData = beatGridToChunks(beatGrid, durMs);
+        setProgress(30);
+      } else {
+        // Fallback: original Gemini AI chunking
+        setProgress(18);
+        const aiChunks = await chunkVideoWithAI(videoFile, dur, styleTag);
+        if (signal.aborted) throw new DOMException('Cancelled', 'AbortError');
+        chunksData = aiChunks.map((c: any) => ({ ...c, clip_url: '', beat_start_count: null, beat_end_count: null }));
+        setProgress(30);
+      }
 
       // ── 4. Pose extraction ───────────────────────────────────────────────
       setPipelineState('ANALYZING_POSE');
       const frames = await extractFrames(
         videoFile,
-        (p) => setProgress(38 + p * 0.42),  // maps 0–100% → 38–80%
+        (p) => setProgress(30 + p * 0.50),  // maps 0–100% → 30–80%
         { signal },
       );
       if (signal.aborted) throw new DOMException('Cancelled', 'AbortError');
@@ -507,11 +529,13 @@ export default function Upload() {
 
       // ── 6. Build chunk records ───────────────────────────────────────────
       const finalChunks = chunksData.map((c: any) => ({
-        chunk_index:   c.chunk_index,
-        start_time_ms: c.start_time_ms,
-        end_time_ms:   c.end_time_ms,
-        description:   c.description,
-        clip_url:      '',
+        chunk_index:      c.chunk_index,
+        start_time_ms:    c.start_time_ms,
+        end_time_ms:      c.end_time_ms,
+        description:      c.description,
+        clip_url:         '',
+        beat_start_count: c.beat_start_count ?? null,
+        beat_end_count:   c.beat_end_count   ?? null,
         pose_slice_json: frames.filter(
           (f: any) => f.timestamp_ms >= c.start_time_ms && f.timestamp_ms <= c.end_time_ms
         ),
@@ -522,12 +546,13 @@ export default function Upload() {
       if (session?.user?.id) {
         try {
           const { data: routineData } = await supabase.rpc('rpc_create_routine', {
-            p_user_id:        session.user.id,
-            p_title:          routineTitle || videoFile.name.replace(/\.[^/.]+$/, ''),
-            p_style_tag:      styleTag,
-            p_thumbnail_url:  thumbnailUrl,
-            p_pose_json_url:  poseJsonUrl,
+            p_user_id:          session.user.id,
+            p_title:            routineTitle || videoFile.name.replace(/\.[^/.]+$/, ''),
+            p_style_tag:        styleTag,
+            p_thumbnail_url:    thumbnailUrl,
+            p_pose_json_url:    poseJsonUrl,
             p_duration_seconds: Math.round(dur),
+            p_beat_grid_json:   beatGrid ?? null,
           });
           if (routineData?.id) {
             await supabase.rpc('rpc_save_chunks', {
