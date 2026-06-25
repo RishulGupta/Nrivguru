@@ -336,7 +336,11 @@ export function DrillLoop({ videoSrc, beatRange, bpm = 120, rangeCounts, referen
   const cleanupLeadIn = useRef<(() => void) | null>(null);
   const loadedSrcRef  = useRef('');
   // Stable ref so timeupdate closure always reads fresh poseDetection values
-  const poseRef       = useRef(poseDetection);
+  const poseRef            = useRef(poseDetection);
+  // Accumulates joint scores sampled specifically near boundary timestamps
+  // Shape: { [jointName]: { sum: number; count: number } }
+  const boundaryScoreRef   = useRef<Record<string, { sum: number; count: number }>>({});
+  const boundaryTimeMsRef  = useRef(boundaryTimeMs);
 
   // Display state
   const [loopPhase, setLoopPhase_]      = useState<LoopPhase>('lead_in');
@@ -348,8 +352,9 @@ export function DrillLoop({ videoSrc, beatRange, bpm = 120, rangeCounts, referen
   const [videoProgress, setVideoProgress]     = useState(0);
   const [correctionBadge, setCorrectionBadge] = useState<string | null>(null);
 
-  // Keep poseRef in sync so closures always read the latest slot
+  // Keep refs in sync so closures always read the latest values
   useEffect(() => { poseRef.current = poseDetection; }, [poseDetection]);
+  useEffect(() => { boundaryTimeMsRef.current = boundaryTimeMs; }, [boundaryTimeMs]);
 
   // Pending config (queued until next lead-in)
   const [pendingStage, setPendingStage] = useState<DrillStage>('slow_marked');
@@ -398,14 +403,33 @@ export function DrillLoop({ videoSrc, beatRange, bpm = 120, rangeCounts, referen
       if (loopPhaseRef.current !== 'playing') return;
       if (v.currentTime * 1000 >= beatRange.endTimeMs) {
         v.pause();
-        // Score the rep synchronously from current joint scores, then reset
+        // Score the rep; in connect mode prefer boundary-window worst joint
         const pd = poseRef.current;
         if (pd) {
-          const worst = pd.jointScores
-            .filter(j => j.score >= 0 && j.score < 70 && JOINT_FIX[j.name])
-            .sort((a, b) => a.score - b.score)[0];
-          setCorrectionBadge(worst ? JOINT_FIX[worst.name] : null);
-          pd.finishAttempt().catch(() => {}); // reset accumulator for next rep
+          let badge: string | null = null;
+
+          if (connectMode && Object.keys(boundaryScoreRef.current).length > 0) {
+            // Find joint with lowest average score near the transition
+            const worstBoundary = Object.entries(boundaryScoreRef.current)
+              .map(([name, { sum, count }]) => ({ name, avg: sum / count }))
+              .filter(j => j.avg < 70 && JOINT_FIX[j.name])
+              .sort((a, b) => a.avg - b.avg)[0];
+            if (worstBoundary) {
+              badge = `${JOINT_FIX[worstBoundary.name]} — watch the transition`;
+            }
+          }
+
+          if (!badge) {
+            // Fall back to overall session worst joint
+            const worst = pd.jointScores
+              .filter(j => j.score >= 0 && j.score < 70 && JOINT_FIX[j.name])
+              .sort((a, b) => a.score - b.score)[0];
+            badge = worst ? JOINT_FIX[worst.name] : null;
+          }
+
+          setCorrectionBadge(badge);
+          pd.finishAttempt().catch(() => {});
+          boundaryScoreRef.current = {};
         }
         setLoopPhase('lead_in');
       }
@@ -520,22 +544,45 @@ export function DrillLoop({ videoSrc, beatRange, bpm = 120, rangeCounts, referen
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [referencePoses]);
 
-  // processFrame rAF loop — only runs during playing phase
+  // processFrame rAF loop — only runs during playing phase.
+  // In connect mode, also samples joint scores near boundary timestamps
+  // into boundaryScoreRef for transition-weighted correction.
   useEffect(() => {
     if (loopPhase !== 'playing' || !poseDetection?.isWorkerReady) return;
+    boundaryScoreRef.current = {}; // reset accumulator for this rep
+    const beatDurMs = (60 / bpm) * 1000;
     let animId: number;
+
     const loop = () => {
       const w = poseRef.current?.webcamRef.current;
       const v = videoRef.current;
       if (w && v && w.readyState >= 2) {
-        poseRef.current!.processFrame(w, v.currentTime * 1000, 'arms');
+        const tMs = v.currentTime * 1000;
+        poseRef.current!.processFrame(w, tMs, 'arms');
+
+        // In connect mode, accumulate scores near each boundary
+        if (connectMode && boundaryTimeMsRef.current.length > 0) {
+          const nearBoundary = boundaryTimeMsRef.current.some(
+            b => Math.abs(tMs - b) < beatDurMs * 2,
+          );
+          if (nearBoundary) {
+            const scores = poseRef.current?.jointScores ?? [];
+            for (const j of scores) {
+              if (!JOINT_FIX[j.name]) continue;
+              const acc = boundaryScoreRef.current[j.name] ?? { sum: 0, count: 0 };
+              acc.sum   += j.score;
+              acc.count += 1;
+              boundaryScoreRef.current[j.name] = acc;
+            }
+          }
+        }
       }
       animId = requestAnimationFrame(loop);
     };
     animId = requestAnimationFrame(loop);
     return () => cancelAnimationFrame(animId);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [loopPhase, poseDetection?.isWorkerReady]);
+  }, [loopPhase, poseDetection?.isWorkerReady, connectMode, bpm]);
 
   // ── Cleanup ─────────────────────────────────────────────────────────────────
 
