@@ -58,31 +58,31 @@ export const lessonMachine = setup({
             actions: [({ context, event }) => { context.chunkIndex = event.chunkIndex; }, 'resetAttempt']
           },
           {
-            target: 'teach',
+            target: 'watch',
             actions: [({ context, event }) => { context.chunkIndex = event.chunkIndex; }, 'resetAttempt']
           }
         ]
       }
     },
-    teach: {
-      // Phase 0: Keyframe visualization, no playback, no scoring
+    watch: {
+      // Phase 1: Watch reference video at slow-motion
       on: {
-        PHASE_COMPLETE: 'watch',
+        PHASE_COMPLETE: 'teach',
+        SKIP_TO_FULL: {
+          target: 'prep_full',
+          actions: 'incrementAttempt'
+        },
         PREV_PHASE: 'idle'
       }
     },
-    watch: {
-      // Phase 1: Watch reference at slow-motion with keyframe highlights
+    teach: {
+      // Phase 2: Step-by-step tutorial with video split-screen
       on: {
         PHASE_COMPLETE: {
           target: 'prep_arms',
           actions: 'incrementAttempt'
         },
-        SKIP_TO_FULL: {
-          target: 'prep_full',
-          actions: 'incrementAttempt'
-        },
-        PREV_PHASE: 'teach'
+        PREV_PHASE: 'watch'
       }
     },
     // ── Preparation states (Step 1) ──
@@ -201,7 +201,7 @@ export const lessonMachine = setup({
     },
     // START_CHUNK works from any state (global) — used for chunk navigation
     START_CHUNK: {
-      target: '.teach',
+      target: '.watch',
       actions: [
         ({ context, event }) => { context.chunkIndex = event.chunkIndex; },
         'resetAttempt'
@@ -235,8 +235,8 @@ export function usePracticeSession() {
                     'full' as const;
 
   // Phase label for display
-  const phaseLabel = phase === 'teach' ? '👀 Study the Moves' :
-                     phase === 'watch' ? '👀 Watch & Learn' :
+  const phaseLabel = phase === 'watch' ? '👀 Watch & Learn' :
+                     phase === 'teach' ? '📖 Tutorial' :
                      phase === 'prep_arms' || phase === 'arms' ? '💪 Upper Body' :
                      phase === 'prep_legs' || phase === 'legs' ? '🦵 Legs' :
                      phase === 'prep_combine' || phase === 'combine' ? '🕺 Put It Together' :

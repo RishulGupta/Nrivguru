@@ -235,6 +235,7 @@ export default function Practice() {
   const [referencePoses, setReferencePoses] = useState<PoseFrame[]>([]);
   const [keyframes, setKeyframes] = useState<PoseFrame[]>([]);
   const [showWatchOverlay, setShowWatchOverlay] = useState(false);
+  const [refVideoPlaying, setRefVideoPlaying] = useState(false);
 
   // ── Modules ──
   const difficultyScaler = useRef(new DifficultyScaler()).current;
@@ -348,7 +349,7 @@ export default function Practice() {
     if (phase === 'watch') {
       setAnnouncement('video');
       setAnnounceCd(3);
-    } else if (phase === 'teach' && prev !== 'idle') {
+    } else if (phase === 'teach') {
       setAnnouncement('tutorial');
       setAnnounceCd(3);
     }
@@ -555,12 +556,15 @@ export default function Practice() {
     }
     setVideoError('');
 
-    const startMs = chunk.start_time_ms || 0;
-    const endMs = chunk.end_time_ms || 0;
+    const rawStartMs = chunk.start_time_ms || 0;
+    const rawEndMs = chunk.end_time_ms || 0;
+    // clip_url is a pre-cut file that starts at 0; full video uses absolute timestamps
+    const isClip = !!chunk.clip_url;
+    const startMs = isClip ? 0 : rawStartMs;
+    const endMs   = isClip ? rawEndMs - rawStartMs : rawEndMs;
 
     v.src = videoSrc;
     v.playbackRate = effectivePlaybackRate;
-    // Seek immediately so even if metadata fires late the video is at the right position
     v.currentTime = startMs / 1000;
 
     const onLoadedMetadata = () => {
@@ -568,7 +572,6 @@ export default function Practice() {
 
       const doPlay = () => {
         v.play().then(() => {
-          // Must set playbackRate AFTER play() starts — browser resets it otherwise
           v.playbackRate = effectivePlaybackRate;
         }).catch(e => console.warn("Auto-play prevented", e));
       };
@@ -577,7 +580,7 @@ export default function Practice() {
         doPlay();
       } else if (isPractice && !attemptComplete && !pendingAdjustment) {
         doPlay();
-        if (endMs > startMs) countingSystem.start(endMs - startMs, effectivePlaybackRate);
+        if (endMs > 0) countingSystem.start(endMs, effectivePlaybackRate);
       }
     };
 
@@ -944,11 +947,11 @@ export default function Practice() {
     <div className="h-dvh bg-black flex flex-col overflow-hidden">
 
       {/* ── Persistent camera video (always in DOM so src stays alive) ── */}
-      {/* Shown fullscreen during non-practice phases (watch, teach, prep) */}
+      {/* Hidden during watch (reference video shows instead) and during practice (split-screen panel used) */}
       <video
         ref={webcamRef}
         className={`${
-          isPractice ? 'hidden' : 'fixed inset-0 w-full h-full object-cover z-0'
+          isPractice || phase === 'watch' ? 'hidden' : 'fixed inset-0 w-full h-full object-cover z-0'
         } ${isMirrorMode ? 'scale-x-[-1]' : ''}`}
         playsInline
         muted
@@ -992,10 +995,9 @@ export default function Practice() {
                   const v = refVideoRef.current;
                   if (v && chunk) {
                     setShowWatchOverlay(false);
-                    v.currentTime = (chunk.start_time_ms || 0) / 1000;
-                    v.play().then(() => {
-                      v.playbackRate = effectivePlaybackRate;
-                    }).catch(() => {});
+                    // clip_url is pre-cut → start at 0; full video → seek to chunk offset
+                    v.currentTime = chunk.clip_url ? 0 : (chunk.start_time_ms || 0) / 1000;
+                    v.play().then(() => { v.playbackRate = effectivePlaybackRate; }).catch(() => {});
                   }
                 }}
                 className="w-full py-4 bg-white/10 hover:bg-white/20 text-white font-bold rounded-xl transition-all text-lg"
@@ -1139,22 +1141,48 @@ export default function Practice() {
       <div className="flex-1 min-h-0 flex overflow-hidden">
 
         {/* ── Reference video — full width during watch, half width during practice ── */}
-        <div className={`relative bg-gray-950 overflow-hidden transition-all ${
-          phase === 'watch' ? 'flex-1' : isPractice ? 'flex-1 border-r border-white/5' : 'hidden'
+        <div className={`relative bg-black overflow-hidden transition-all ${
+          phase === 'watch' ? 'flex-1 z-10' : isPractice ? 'flex-1 border-r border-white/5' : 'hidden'
         }`}>
           <video
             ref={refVideoRef}
             className="absolute inset-0 w-full h-full object-contain"
             muted
             playsInline
+            onPlay={() => setRefVideoPlaying(true)}
+            onPause={() => setRefVideoPlaying(false)}
+            onClick={() => {
+              const v = refVideoRef.current;
+              if (v && v.paused && phase === 'watch') v.play().catch(() => {});
+            }}
           />
           {videoError && (
-            <div className="absolute inset-0 flex items-center justify-center bg-black/60 z-10">
-              <p className="text-red-400 text-xs">{videoError}</p>
+            <div className="absolute inset-0 flex items-center justify-center bg-black z-10">
+              <div className="text-center gap-3 flex flex-col items-center">
+                <p className="text-white/40 text-sm">No video available</p>
+                <button
+                  onClick={() => sendSessionEvent({ type: 'PHASE_COMPLETE' })}
+                  className="text-violet-400 text-sm underline"
+                >
+                  Skip to tutorial →
+                </button>
+              </div>
             </div>
           )}
+          {/* Tap-to-play — only when video is paused (not playing) */}
+          {phase === 'watch' && !showWatchOverlay && !videoError && !refVideoPlaying && (
+            <button
+              onClick={() => { refVideoRef.current?.play().catch(() => {}); }}
+              className="absolute inset-0 z-10 flex items-center justify-center bg-black/20"
+              aria-label="Tap to play"
+            >
+              <div className="w-16 h-16 rounded-full bg-white/15 backdrop-blur flex items-center justify-center">
+                <span className="text-3xl ml-1">▶</span>
+              </div>
+            </button>
+          )}
           {phase === 'watch' && (
-            <div className="absolute top-3 right-3 z-10 bg-black/40 text-white/40 text-xs px-2 py-1 rounded-lg">
+            <div className="absolute top-3 right-3 z-20 bg-black/40 text-white/40 text-xs px-2 py-1 rounded-lg pointer-events-none">
               {effectivePlaybackRate < 1 ? `${effectivePlaybackRate}×` : 'Full speed'}
             </div>
           )}
