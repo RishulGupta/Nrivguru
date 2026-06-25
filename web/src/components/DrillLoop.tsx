@@ -40,13 +40,17 @@ export interface PoseDetectionSlot {
 }
 
 interface DrillLoopProps {
-  videoSrc:        string;
-  beatRange:       BeatRange;
-  bpm?:            number;
-  rangeCounts?:    RangeCount[];
-  referencePoses?: PoseFrame[];
-  poseDetection?:  PoseDetectionSlot;
-  onClose:         () => void;
+  videoSrc:         string;
+  beatRange:        BeatRange;
+  bpm?:             number;
+  rangeCounts?:     RangeCount[];
+  referencePoses?:  PoseFrame[];
+  poseDetection?:   PoseDetectionSlot;
+  /** Connect mode: 2+ chunks run back-to-back in one loop pass */
+  connectMode?:     boolean;
+  /** Timestamps (ms) where chunk boundaries fall within the loop range */
+  boundaryTimeMs?:  number[];
+  onClose:          () => void;
 }
 
 // ── CorrectionBadge ───────────────────────────────────────────────────────────
@@ -308,7 +312,7 @@ function SettingsPanel({
 
 // ── DrillLoop ─────────────────────────────────────────────────────────────────
 
-export function DrillLoop({ videoSrc, beatRange, bpm = 120, rangeCounts, referencePoses, poseDetection, onClose }: DrillLoopProps) {
+export function DrillLoop({ videoSrc, beatRange, bpm = 120, rangeCounts, referencePoses, poseDetection, connectMode = false, boundaryTimeMs = [], onClose }: DrillLoopProps) {
   const videoRef      = useRef<HTMLVideoElement>(null);
   const audioCtxRef   = useRef<AudioContext | null>(null);
   const cleanupLeadIn = useRef<(() => void) | null>(null);
@@ -553,6 +557,7 @@ export function DrillLoop({ videoSrc, beatRange, bpm = 120, rangeCounts, referen
           rangeCounts={rangeCounts}
           bpm={bpm}
           beatRange={beatRange}
+          boundaryTimeMs={boundaryTimeMs}
         />
       )}
 
@@ -599,6 +604,7 @@ export function DrillLoop({ videoSrc, beatRange, bpm = 120, rangeCounts, referen
         <div className="bg-black/50 backdrop-blur-md px-3 py-1.5 rounded-full border border-white/10 flex items-center gap-2">
           <span>{stageInfo.emoji}</span>
           <span className="text-white/70 text-xs font-semibold">{stageInfo.label}</span>
+          {connectMode && <span className="text-violet-400/70 text-[10px] font-bold">CONNECT</span>}
           {loopCount > 0 && <span className="text-white/30 text-xs">· #{loopCount}</span>}
         </div>
 
