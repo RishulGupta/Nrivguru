@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { ArrowLeft, Play, Zap, Music } from 'lucide-react';
+import { ArrowLeft, Play, Zap, Music, Eye } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 import { useAuthStore } from '../store/useStore';
 
@@ -424,6 +424,23 @@ export default function RoutineDetail() {
 
       {/* Content */}
       <main className="px-4 pt-6 pb-16 max-w-2xl mx-auto space-y-6">
+
+        {/* Preview — step 2 of class model: watch full choreo once before learning */}
+        <button
+          onClick={() => navigate(`/practice/${routine.id}/full`, {
+            state: {
+              previewMode:      true,
+              skipModeSelector: true,
+              startTimeMs:      0,
+              endTimeMs:        (routine.duration_seconds ?? 0) * 1000,
+              title:            routine.title,
+            },
+          })}
+          className="w-full bg-violet-500/12 hover:bg-violet-500/20 border border-violet-500/25 hover:border-violet-500/40 text-violet-200 font-semibold py-3.5 rounded-2xl transition-all flex items-center justify-center gap-2"
+        >
+          <Eye className="w-4 h-4 text-violet-400" />
+          Preview · Full Speed · With Music
+        </button>
 
         {/* Full-routine quick-play */}
         <button
