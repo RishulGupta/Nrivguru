@@ -202,6 +202,7 @@ export default function Practice() {
   const practiceWebcamRef  = useRef<HTMLVideoElement>(null); // split-screen right panel
   const refVideoRef        = useRef<HTMLVideoElement>(null);
   const cameraStreamRef    = useRef<MediaStream | null>(null);
+  const loadedVideoSrcRef  = useRef(''); // tracks which src is currently loaded in refVideoRef — avoids redundant load() calls that reset currentTime
 
   const [hasWebcam, setHasWebcam] = useState(false);
   const [webcamError, setWebcamError] = useState('');
@@ -592,28 +593,10 @@ export default function Practice() {
     const startMs = isClip ? 0 : rawStartMs;
     const endMs   = isClip ? rawEndMs - rawStartMs : rawEndMs;
 
-    v.src = videoSrc;
-    v.playbackRate = effectivePlaybackRate;
-    v.currentTime = startMs / 1000;
-
-    const onLoadedMetadata = () => {
-      v.currentTime = startMs / 1000;
-
-      const doPlay = () => {
-        v.play().then(() => {
-          v.playbackRate = effectivePlaybackRate;
-        }).catch(e => console.warn("Auto-play prevented", e));
-      };
-
-      if (phase === 'watch') {
-        doPlay();
-      } else if (isPractice && !attemptComplete && !pendingAdjustment) {
-        doPlay();
-        if (endMs > 0) countingSystem.start(endMs, effectivePlaybackRate);
-      }
-    };
+    let cleanedUp = false;
 
     const onTimeUpdate = () => {
+      if (cleanedUp) return;
       const currentMs = v.currentTime * 1000;
       const effectiveEndMs = endMs > 0 ? endMs : v.duration * 1000;
 
@@ -632,29 +615,66 @@ export default function Practice() {
       if (currentMs >= effectiveEndMs && effectiveEndMs > 0) {
         v.pause();
         countingSystem.stop();
-
-        if (phase === 'watch') {
-          setShowWatchOverlay(true);
-        } else if (isPractice) {
-          handleScoredAttemptFinished();
-        }
+        if (phase === 'watch') setShowWatchOverlay(true);
+        else if (isPractice) handleScoredAttemptFinished();
       }
     };
 
-    v.addEventListener('loadedmetadata', onLoadedMetadata);
-    v.addEventListener('timeupdate', onTimeUpdate);
-    v.load();
-
-    // Fallback: if already loaded (cached), fire handler directly
-    if (v.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
-      onLoadedMetadata();
-    }
-
-    return () => {
-      v.removeEventListener('loadedmetadata', onLoadedMetadata);
-      v.removeEventListener('timeupdate', onTimeUpdate);
-      countingSystem.stop();
+    const doPlay = () => {
+      if (cleanedUp) return;
+      v.play().then(() => { v.playbackRate = effectivePlaybackRate; }).catch(e => console.warn('autoplay blocked', e));
+      if (isPractice && !attemptComplete && !pendingAdjustment && endMs > 0) {
+        countingSystem.start(endMs, effectivePlaybackRate);
+      }
     };
+
+    // Seek to startMs, then play if appropriate. Waits for the `seeked` event so
+    // the browser has actually repositioned the decode head before playback begins.
+    const seekAndMaybePlay = () => {
+      if (cleanedUp) return;
+      v.playbackRate = effectivePlaybackRate;
+      const targetSec = startMs / 1000;
+
+      // Already at target — play immediately (seeked won't fire)
+      if (Math.abs(v.currentTime - targetSec) < 0.05) {
+        if (phase === 'watch' || (isPractice && !attemptComplete && !pendingAdjustment)) doPlay();
+        return;
+      }
+
+      const onSeeked = () => {
+        v.removeEventListener('seeked', onSeeked);
+        if (cleanedUp) return;
+        if (phase === 'watch' || (isPractice && !attemptComplete && !pendingAdjustment)) doPlay();
+      };
+      v.addEventListener('seeked', onSeeked);
+      v.currentTime = targetSec;
+    };
+
+    v.addEventListener('timeupdate', onTimeUpdate);
+
+    if (loadedVideoSrcRef.current !== videoSrc) {
+      // New source — full reload required
+      loadedVideoSrcRef.current = videoSrc;
+      v.src = videoSrc;
+      v.load();
+      v.addEventListener('loadedmetadata', seekAndMaybePlay, { once: true });
+
+      return () => {
+        cleanedUp = true;
+        v.removeEventListener('loadedmetadata', seekAndMaybePlay);
+        v.removeEventListener('timeupdate', onTimeUpdate);
+        countingSystem.stop();
+      };
+    } else {
+      // Same source — seek directly without reloading (avoids resetting currentTime to 0)
+      seekAndMaybePlay();
+
+      return () => {
+        cleanedUp = true;
+        v.removeEventListener('timeupdate', onTimeUpdate);
+        countingSystem.stop();
+      };
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [chunk, routine, phase, effectivePlaybackRate, attemptComplete, pendingAdjustment, isPractice]);
 
