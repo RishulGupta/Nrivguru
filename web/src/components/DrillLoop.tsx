@@ -83,17 +83,22 @@ function CorrectionBadge({ message, repCount }: { message: string | null; repCou
 // Displays the current beat count (1-8) synced to beat timestamps via rAF.
 
 function CountCaption({
-  videoRef, rangeCounts, bpm, beatRange,
+  videoRef, rangeCounts, bpm, beatRange, boundaryTimeMs = [],
 }: {
-  videoRef:    React.RefObject<HTMLVideoElement>;
-  rangeCounts: RangeCount[] | undefined;
-  bpm:         number;
-  beatRange:   BeatRange;
+  videoRef:        React.RefObject<HTMLVideoElement>;
+  rangeCounts:     RangeCount[] | undefined;
+  bpm:             number;
+  beatRange:       BeatRange;
+  boundaryTimeMs?: number[];
 }) {
-  const [displayCount, setDisplayCount] = useState<number | null>(null);
-  const [flash, setFlash]               = useState(false);
+  const [displayCount, setDisplayCount]       = useState<number | null>(null);
+  const [flash, setFlash]                     = useState(false);
+  const [atBoundary, setAtBoundary]           = useState(false);
   const lastCountRef  = useRef<number | null>(null);
   const flashTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // One beat duration in seconds — used to detect the boundary window
+  const beatSec = 60 / bpm;
 
   useEffect(() => {
     const v = videoRef.current;
@@ -105,7 +110,6 @@ function CountCaption({
       let count: number | null = null;
 
       if (rangeCounts && rangeCounts.length > 0) {
-        // Last beat whose timestamp is at or just before current time
         let found: RangeCount | null = null;
         for (const c of rangeCounts) {
           if (c.time <= t + 0.05) found = c;
@@ -113,10 +117,15 @@ function CountCaption({
         }
         count = found?.count ?? null;
       } else {
-        // BPM fallback when no timestamps available
         const elapsed = t - beatRange.startTimeMs / 1000;
         if (elapsed >= 0) count = (Math.floor(elapsed / (60 / bpm)) % 8) + 1;
       }
+
+      // Mark as boundary if within one beat of any chunk transition
+      const nearBoundary = boundaryTimeMs.some(
+        b => Math.abs(t - b / 1000) < beatSec,
+      );
+      setAtBoundary(nearBoundary);
 
       if (count !== null && count !== lastCountRef.current) {
         lastCountRef.current = count;
@@ -134,24 +143,33 @@ function CountCaption({
       cancelAnimationFrame(animId);
       if (flashTimerRef.current) clearTimeout(flashTimerRef.current);
     };
-  }, [videoRef, rangeCounts, bpm, beatRange.startTimeMs]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [videoRef, rangeCounts, bpm, beatRange.startTimeMs, boundaryTimeMs]);
 
   if (displayCount === null) return null;
 
+  // Boundary beats render amber + larger to signal the transition zone
+  const isBig    = flash || atBoundary;
+  const color    = atBoundary
+    ? 'rgba(251,191,36,0.95)'   // amber-400
+    : 'rgba(255,255,255,0.92)';
+  const shadow   = atBoundary
+    ? '0 0 18px rgba(251,191,36,0.7), 0 2px 4px rgba(0,0,0,0.8)'
+    : '0 0 12px rgba(0,0,0,0.9), 0 2px 4px rgba(0,0,0,0.8)';
+
   return (
-    <div className="absolute bottom-28 inset-x-0 flex justify-center pointer-events-none z-10">
+    <div className="absolute bottom-28 inset-x-0 flex flex-col items-center pointer-events-none z-10 gap-1">
       <span
-        className={`font-black tabular-nums leading-none select-none transition-transform duration-75 ${flash ? 'scale-125' : 'scale-100'}`}
-        style={{
-          fontSize: '5rem',
-          color: 'rgba(255,255,255,0.92)',
-          textShadow: '0 0 12px rgba(0,0,0,0.9), 0 2px 4px rgba(0,0,0,0.8)',
-          display: 'block',
-          willChange: 'transform',
-        }}
+        className={`font-black tabular-nums leading-none select-none transition-all duration-75 ${isBig ? 'scale-125' : 'scale-100'}`}
+        style={{ fontSize: '5rem', color, textShadow: shadow, display: 'block', willChange: 'transform' }}
       >
         {displayCount}
       </span>
+      {atBoundary && (
+        <span className="text-amber-300/70 text-[10px] font-bold uppercase tracking-widest animate-pulse">
+          transition
+        </span>
+      )}
     </div>
   );
 }
