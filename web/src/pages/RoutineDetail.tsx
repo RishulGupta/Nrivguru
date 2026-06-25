@@ -495,6 +495,24 @@ export default function RoutineDetail() {
             navigate={navigate}
           />
         )}
+
+        {/* Full Run-Through — step 9 of class model */}
+        <button
+          onClick={() => navigate(`/practice/${routine.id}/full`, {
+            state: {
+              fullRunMode:      true,
+              skipModeSelector: true,
+              startTimeMs:      0,
+              endTimeMs:        (routine.duration_seconds ?? 0) * 1000,
+              bpm:              beatGrid?.bpm,
+              rangeCounts:      beatGrid?.counts,
+            },
+          })}
+          className="w-full bg-white/5 hover:bg-white/10 border border-white/10 hover:border-white/20 text-white/70 font-semibold py-3.5 rounded-2xl transition-all flex items-center justify-center gap-2"
+        >
+          <Zap className="w-4 h-4 text-violet-400" />
+          Full Run-Through
+        </button>
       </main>
     </div>
   );
