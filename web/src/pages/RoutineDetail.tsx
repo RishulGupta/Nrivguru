@@ -422,36 +422,10 @@ export default function RoutineDetail() {
         </div>
       </div>
 
-      {/* Content */}
+      {/* Content — ordered to match the 11-step class model */}
       <main className="px-4 pt-6 pb-16 max-w-2xl mx-auto space-y-6">
 
-        {/* Preview — step 2 of class model: watch full choreo once before learning */}
-        <button
-          onClick={() => navigate(`/practice/${routine.id}/full`, {
-            state: {
-              previewMode:      true,
-              skipModeSelector: true,
-              startTimeMs:      0,
-              endTimeMs:        (routine.duration_seconds ?? 0) * 1000,
-              title:            routine.title,
-            },
-          })}
-          className="w-full bg-violet-500/12 hover:bg-violet-500/20 border border-violet-500/25 hover:border-violet-500/40 text-violet-200 font-semibold py-3.5 rounded-2xl transition-all flex items-center justify-center gap-2"
-        >
-          <Eye className="w-4 h-4 text-violet-400" />
-          Preview · Full Speed · With Music
-        </button>
-
-        {/* Full-routine quick-play */}
-        <button
-          onClick={() => navigate(`/practice/${routine.id}/full`, { state: { mode: 'full_body', skipModeSelector: true } })}
-          className="w-full bg-white/6 hover:bg-white/10 border border-white/8 hover:border-white/15 text-white font-semibold py-3.5 rounded-2xl transition-all flex items-center justify-center gap-2"
-        >
-          <Zap className="w-4 h-4 text-amber-400" />
-          Full Routine · Full Speed
-        </button>
-
-        {/* Warm-up */}
+        {/* Step 1 — Warm-up */}
         <div
           className="glass p-5 rounded-2xl border border-emerald-500/20 hover:border-emerald-500/40 transition-all flex items-center justify-between group cursor-pointer"
           onClick={() => navigate(`/warmup/${routine.id}/full`)}
@@ -468,7 +442,24 @@ export default function RoutineDetail() {
           <Play className="w-4 h-4 text-emerald-400" />
         </div>
 
-        {/* Section header */}
+        {/* Step 2 — Preview: watch full choreo once before teaching */}
+        <button
+          onClick={() => navigate(`/practice/${routine.id}/full`, {
+            state: {
+              previewMode:      true,
+              skipModeSelector: true,
+              startTimeMs:      0,
+              endTimeMs:        (routine.duration_seconds ?? 0) * 1000,
+              title:            routine.title,
+            },
+          })}
+          className="w-full bg-violet-500/12 hover:bg-violet-500/20 border border-violet-500/25 hover:border-violet-500/40 text-violet-200 font-semibold py-3.5 rounded-2xl transition-all flex items-center justify-center gap-2"
+        >
+          <Eye className="w-4 h-4 text-violet-400" />
+          Preview · Full Speed · With Music
+        </button>
+
+        {/* Steps 3–8 — Count Map: phrase selection → Teach / Connect */}
         <div>
           <h2 className="text-lg font-bold text-white mb-1">
             {hasBeatGrid ? 'Count Map' : 'Segments'}
@@ -480,7 +471,6 @@ export default function RoutineDetail() {
           </p>
         </div>
 
-        {/* Count map (beat grid) or flat list (fallback) */}
         {hasBeatGrid ? (
           <CountMapTimeline
             beatGrid={beatGrid!}
@@ -496,24 +486,7 @@ export default function RoutineDetail() {
           />
         )}
 
-        {/* Record Performance Take — step 10 (optional) */}
-        <button
-          onClick={() => navigate(`/practice/${routine.id}/full`, {
-            state: {
-              performanceTakeMode: true,
-              skipModeSelector:    true,
-              startTimeMs:         0,
-              endTimeMs:           (routine.duration_seconds ?? 0) * 1000,
-              title:               routine.title,
-            },
-          })}
-          className="w-full bg-white/4 hover:bg-white/8 border border-white/8 hover:border-white/15 text-white/60 font-semibold py-3.5 rounded-2xl transition-all flex items-center justify-center gap-2"
-        >
-          <Video className="w-4 h-4 text-red-400" />
-          Record Performance Take
-        </button>
-
-        {/* Full Run-Through — step 9 of class model */}
+        {/* Step 9 — Full Run-Through: slow → full speed over whole routine */}
         <button
           onClick={() => navigate(`/practice/${routine.id}/full`, {
             state: {
@@ -529,6 +502,23 @@ export default function RoutineDetail() {
         >
           <Zap className="w-4 h-4 text-violet-400" />
           Full Run-Through
+        </button>
+
+        {/* Step 10 — Performance Take (optional): record yourself for review */}
+        <button
+          onClick={() => navigate(`/practice/${routine.id}/full`, {
+            state: {
+              performanceTakeMode: true,
+              skipModeSelector:    true,
+              startTimeMs:         0,
+              endTimeMs:           (routine.duration_seconds ?? 0) * 1000,
+              title:               routine.title,
+            },
+          })}
+          className="w-full bg-white/4 hover:bg-white/8 border border-white/8 hover:border-white/15 text-white/55 font-semibold py-3.5 rounded-2xl transition-all flex items-center justify-center gap-2"
+        >
+          <Video className="w-4 h-4 text-red-400" />
+          Record Performance Take
         </button>
       </main>
     </div>
