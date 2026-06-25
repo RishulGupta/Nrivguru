@@ -995,6 +995,15 @@ export default function Practice() {
         beatRange={beatRange}
         bpm={bpm}
         rangeCounts={locationState?.rangeCounts}
+        referencePoses={referencePoses}
+        poseDetection={isWorkerReady ? {
+          isWorkerReady,
+          jointScores,
+          loadReference,
+          processFrame,
+          finishAttempt,
+          webcamRef,
+        } : undefined}
         onClose={() => navigate(-1)}
       />
     );

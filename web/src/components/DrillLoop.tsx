@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { X, Pause, Play, SlidersHorizontal, ChevronDown } from 'lucide-react';
+import type { PoseFrame } from '@taal/shared/types/pose';
+import type { FinalScore, JointScore } from '@taal/shared/types/routine';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -14,12 +16,63 @@ export interface BeatRange {
 
 export interface RangeCount { count: number; time: number; }
 
+// Worst-joint fix messages — surfaces single actionable cue per rep
+const JOINT_FIX: Record<string, string> = {
+  left_shoulder:  'Left shoulder — lift it higher',
+  right_shoulder: 'Right shoulder — lift it higher',
+  left_elbow:     'Left elbow — extend it more',
+  right_elbow:    'Right elbow — extend it more',
+  left_wrist:     'Lead with your left wrist',
+  right_wrist:    'Lead with your right wrist',
+  left_hip:       'Open your left hip more',
+  right_hip:      'Open your right hip more',
+  left_knee:      'Bend your left knee more',
+  right_knee:     'Bend your right knee more',
+};
+
+export interface PoseDetectionSlot {
+  isWorkerReady: boolean;
+  jointScores:   JointScore[];
+  loadReference: (poses: PoseFrame[]) => void;
+  processFrame:  (video: HTMLVideoElement, timeMs: number, focus: string) => void;
+  finishAttempt: () => Promise<FinalScore>;
+  webcamRef:     React.RefObject<HTMLVideoElement>;
+}
+
 interface DrillLoopProps {
-  videoSrc:     string;
-  beatRange:    BeatRange;
-  bpm?:         number;         // from beat_grid_json; defaults to 120
-  rangeCounts?: RangeCount[];   // beat timestamps + count numbers for caption
-  onClose:      () => void;
+  videoSrc:        string;
+  beatRange:       BeatRange;
+  bpm?:            number;
+  rangeCounts?:    RangeCount[];
+  referencePoses?: PoseFrame[];
+  poseDetection?:  PoseDetectionSlot;
+  onClose:         () => void;
+}
+
+// ── CorrectionBadge ───────────────────────────────────────────────────────────
+// Small persistent badge shown after each rep. Updates rep-to-rep with the
+// single worst joint cue. Never interrupts the loop or requires a tap.
+
+function CorrectionBadge({ message, repCount }: { message: string | null; repCount: number }) {
+  const [visible, setVisible] = useState(false);
+
+  useEffect(() => {
+    if (!message) { setVisible(false); return; }
+    // Brief delay so badge appears cleanly after lead-in begins
+    const t = setTimeout(() => setVisible(true), 300);
+    return () => clearTimeout(t);
+  }, [message, repCount]);
+
+  if (!message) return null;
+
+  return (
+    <div className={`absolute top-20 left-4 z-20 max-w-[58%] pointer-events-none transition-opacity duration-300 ${visible ? 'opacity-100' : 'opacity-0'}`}>
+      <div className="bg-amber-500/12 border border-amber-400/25 backdrop-blur-md px-3 py-2 rounded-xl">
+        <p className="text-amber-400/60 text-[9px] uppercase tracking-widest mb-0.5">Fix this</p>
+        <p className="text-white/90 text-[11px] font-semibold leading-snug">{message}</p>
+      </div>
+    </div>
+  );
 }
 
 // ── CountCaption ──────────────────────────────────────────────────────────────
@@ -255,11 +308,13 @@ function SettingsPanel({
 
 // ── DrillLoop ─────────────────────────────────────────────────────────────────
 
-export function DrillLoop({ videoSrc, beatRange, bpm = 120, rangeCounts, onClose }: DrillLoopProps) {
+export function DrillLoop({ videoSrc, beatRange, bpm = 120, rangeCounts, referencePoses, poseDetection, onClose }: DrillLoopProps) {
   const videoRef      = useRef<HTMLVideoElement>(null);
   const audioCtxRef   = useRef<AudioContext | null>(null);
   const cleanupLeadIn = useRef<(() => void) | null>(null);
   const loadedSrcRef  = useRef('');
+  // Stable ref so timeupdate closure always reads fresh poseDetection values
+  const poseRef       = useRef(poseDetection);
 
   // Display state
   const [loopPhase, setLoopPhase_]      = useState<LoopPhase>('lead_in');
@@ -268,7 +323,11 @@ export function DrillLoop({ videoSrc, beatRange, bpm = 120, rangeCounts, onClose
   const [leadInCount, setLeadInCount]   = useState<number | null>(null);
   const [loopCount, setLoopCount]       = useState(0);
   const [showSettings, setShowSettings] = useState(false);
-  const [videoProgress, setVideoProgress] = useState(0);
+  const [videoProgress, setVideoProgress]     = useState(0);
+  const [correctionBadge, setCorrectionBadge] = useState<string | null>(null);
+
+  // Keep poseRef in sync so closures always read the latest slot
+  useEffect(() => { poseRef.current = poseDetection; }, [poseDetection]);
 
   // Pending config (queued until next lead-in)
   const [pendingStage, setPendingStage] = useState<DrillStage>('slow_marked');
@@ -317,6 +376,15 @@ export function DrillLoop({ videoSrc, beatRange, bpm = 120, rangeCounts, onClose
       if (loopPhaseRef.current !== 'playing') return;
       if (v.currentTime * 1000 >= beatRange.endTimeMs) {
         v.pause();
+        // Score the rep synchronously from current joint scores, then reset
+        const pd = poseRef.current;
+        if (pd) {
+          const worst = pd.jointScores
+            .filter(j => j.score >= 0 && j.score < 70 && JOINT_FIX[j.name])
+            .sort((a, b) => a.score - b.score)[0];
+          setCorrectionBadge(worst ? JOINT_FIX[worst.name] : null);
+          pd.finishAttempt().catch(() => {}); // reset accumulator for next rep
+        }
         setLoopPhase('lead_in');
       }
     };
@@ -420,6 +488,33 @@ export function DrillLoop({ videoSrc, beatRange, bpm = 120, rangeCounts, onClose
     setPendingSpeed(sp);
   }, []);
 
+  // ── Pose detection effects ───────────────────────────────────────────────────
+
+  // Load reference poses into the worker when they arrive
+  useEffect(() => {
+    if (referencePoses?.length && poseDetection) {
+      poseDetection.loadReference(referencePoses);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [referencePoses]);
+
+  // processFrame rAF loop — only runs during playing phase
+  useEffect(() => {
+    if (loopPhase !== 'playing' || !poseDetection?.isWorkerReady) return;
+    let animId: number;
+    const loop = () => {
+      const w = poseRef.current?.webcamRef.current;
+      const v = videoRef.current;
+      if (w && v && w.readyState >= 2) {
+        poseRef.current!.processFrame(w, v.currentTime * 1000, 'arms');
+      }
+      animId = requestAnimationFrame(loop);
+    };
+    animId = requestAnimationFrame(loop);
+    return () => cancelAnimationFrame(animId);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loopPhase, poseDetection?.isWorkerReady]);
+
   // ── Cleanup ─────────────────────────────────────────────────────────────────
 
   useEffect(() => {
@@ -445,6 +540,11 @@ export function DrillLoop({ videoSrc, beatRange, bpm = 120, rangeCounts, onClose
         playsInline
         muted={activeStage !== 'music'}
       />
+
+      {/* In-loop correction badge — updates after each rep, never blocks loop */}
+      {poseDetection && (
+        <CorrectionBadge message={correctionBadge} repCount={loopCount} />
+      )}
 
       {/* Beat count caption — visible during playing phase only */}
       {loopPhase === 'playing' && (
