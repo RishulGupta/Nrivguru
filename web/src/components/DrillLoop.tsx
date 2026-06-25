@@ -12,11 +12,91 @@ export interface BeatRange {
   endTimeMs:   number;
 }
 
+export interface RangeCount { count: number; time: number; }
+
 interface DrillLoopProps {
-  videoSrc:  string;
-  beatRange: BeatRange;
-  bpm?:      number;   // from beat_grid_json; defaults to 120
-  onClose:   () => void;
+  videoSrc:     string;
+  beatRange:    BeatRange;
+  bpm?:         number;         // from beat_grid_json; defaults to 120
+  rangeCounts?: RangeCount[];   // beat timestamps + count numbers for caption
+  onClose:      () => void;
+}
+
+// ── CountCaption ──────────────────────────────────────────────────────────────
+// Displays the current beat count (1-8) synced to beat timestamps via rAF.
+
+function CountCaption({
+  videoRef, rangeCounts, bpm, beatRange,
+}: {
+  videoRef:    React.RefObject<HTMLVideoElement>;
+  rangeCounts: RangeCount[] | undefined;
+  bpm:         number;
+  beatRange:   BeatRange;
+}) {
+  const [displayCount, setDisplayCount] = useState<number | null>(null);
+  const [flash, setFlash]               = useState(false);
+  const lastCountRef  = useRef<number | null>(null);
+  const flashTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    const v = videoRef.current;
+    if (!v) return;
+    let animId: number;
+
+    const tick = () => {
+      const t = v.currentTime;
+      let count: number | null = null;
+
+      if (rangeCounts && rangeCounts.length > 0) {
+        // Last beat whose timestamp is at or just before current time
+        let found: RangeCount | null = null;
+        for (const c of rangeCounts) {
+          if (c.time <= t + 0.05) found = c;
+          else break;
+        }
+        count = found?.count ?? null;
+      } else {
+        // BPM fallback when no timestamps available
+        const elapsed = t - beatRange.startTimeMs / 1000;
+        if (elapsed >= 0) count = (Math.floor(elapsed / (60 / bpm)) % 8) + 1;
+      }
+
+      if (count !== null && count !== lastCountRef.current) {
+        lastCountRef.current = count;
+        setDisplayCount(count);
+        setFlash(true);
+        if (flashTimerRef.current) clearTimeout(flashTimerRef.current);
+        flashTimerRef.current = setTimeout(() => setFlash(false), 120);
+      }
+
+      animId = requestAnimationFrame(tick);
+    };
+
+    animId = requestAnimationFrame(tick);
+    return () => {
+      cancelAnimationFrame(animId);
+      if (flashTimerRef.current) clearTimeout(flashTimerRef.current);
+    };
+  }, [videoRef, rangeCounts, bpm, beatRange.startTimeMs]);
+
+  if (displayCount === null) return null;
+
+  return (
+    <div className="absolute bottom-28 inset-x-0 flex justify-center pointer-events-none z-10">
+      <span
+        className={`font-black tabular-nums leading-none select-none transition-transform duration-75 ${flash ? 'scale-125' : 'scale-100'}`}
+        style={{
+          fontSize: '5rem',
+          color: 'rgba(255,255,255,0.92)',
+          textShadow: '0 0 12px rgba(0,0,0,0.9), 0 2px 4px rgba(0,0,0,0.8)',
+          display: 'block',
+          willChange: 'transform',
+        }}
+      >
+        {displayCount}
+      </span>
+    </div>
+  );
 }
 
 type LoopPhase = 'lead_in' | 'playing' | 'paused';
@@ -175,7 +255,7 @@ function SettingsPanel({
 
 // ── DrillLoop ─────────────────────────────────────────────────────────────────
 
-export function DrillLoop({ videoSrc, beatRange, bpm = 120, onClose }: DrillLoopProps) {
+export function DrillLoop({ videoSrc, beatRange, bpm = 120, rangeCounts, onClose }: DrillLoopProps) {
   const videoRef      = useRef<HTMLVideoElement>(null);
   const audioCtxRef   = useRef<AudioContext | null>(null);
   const cleanupLeadIn = useRef<(() => void) | null>(null);
@@ -365,6 +445,16 @@ export function DrillLoop({ videoSrc, beatRange, bpm = 120, onClose }: DrillLoop
         playsInline
         muted={activeStage !== 'music'}
       />
+
+      {/* Beat count caption — visible during playing phase only */}
+      {loopPhase === 'playing' && (
+        <CountCaption
+          videoRef={videoRef}
+          rangeCounts={rangeCounts}
+          bpm={bpm}
+          beatRange={beatRange}
+        />
+      )}
 
       {/* Lead-in count display */}
       {isLeadIn && (

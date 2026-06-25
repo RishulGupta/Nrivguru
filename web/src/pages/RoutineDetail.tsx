@@ -17,6 +17,7 @@ interface BeatChunkMeta {
 interface BeatGridJson {
   bpm:    number;
   beats:  number[];
+  counts: { count: number; time: number }[];
   chunks: BeatChunkMeta[];
 }
 
@@ -160,6 +161,11 @@ function CountMapTimeline({
     );
     const firstDbChunk = matchingDbChunks[0] ?? dbChunks[0];
 
+    // Filter beat counts to the selected time range for the caption overlay
+    const rangeCounts = (beatGrid.counts ?? []).filter(
+      c => c.time >= first.startTime - 0.05 && c.time <= last.endTime + 0.05,
+    );
+
     onNavigate(
       {
         skipModeSelector: true,
@@ -170,6 +176,7 @@ function CountMapTimeline({
           startTimeMs: Math.round(first.startTime * 1000),
           endTimeMs:   Math.min(Math.round(last.endTime * 1000), videoDurationMs),
         },
+        rangeCounts,
         connectedChunkIds: matchingDbChunks.map(c => c.id),
       },
       firstDbChunk?.id ?? 'full',

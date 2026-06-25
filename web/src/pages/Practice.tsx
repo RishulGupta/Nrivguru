@@ -994,6 +994,7 @@ export default function Practice() {
         videoSrc={videoSrc}
         beatRange={beatRange}
         bpm={bpm}
+        rangeCounts={locationState?.rangeCounts}
         onClose={() => navigate(-1)}
       />
     );
