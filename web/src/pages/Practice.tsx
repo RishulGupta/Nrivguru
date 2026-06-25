@@ -3,6 +3,7 @@ import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import { Loader2, Camera, SkipForward, SkipBack, ChevronLeft, ChevronRight } from 'lucide-react';
 import SkeletonCanvas from '../components/SkeletonCanvas';
 import { PreparationTimer } from '../components/PreparationTimer';
+import { DrillLoop, type BeatRange } from '../components/DrillLoop';
 
 // ── ResultsOverlay ─────────────────────────────────────────────────────────────
 // Unified results screen — replaces both Phase Complete overlay and ImprovementPhase.
@@ -980,7 +981,23 @@ export default function Practice() {
   const isLastChunk = currentChunkIndex >= totalChunks - 1;
   const hasAllChunks = _allChunks.length > 0;
 
-  // ── Warm-up prompt (only before first segment) ──
+  // ── Beat-based drill loop (Step 5+) ──────────────────────────────────────────
+  // When RoutineDetail passes a beatRange in location state, render DrillLoop
+  // instead of the legacy phase system. The legacy system remains intact for
+  // routines without a beat grid.
+  const beatRange = locationState?.beatRange as BeatRange | undefined;
+  if (beatRange) {
+    const videoSrc = chunk?.clip_url || getOriginalVideoUrl() || routine?.video_blob_url || '';
+    const bpm = (routine as any)?.beat_grid_json?.bpm as number | undefined;
+    return (
+      <DrillLoop
+        videoSrc={videoSrc}
+        beatRange={beatRange}
+        bpm={bpm}
+        onClose={() => navigate(-1)}
+      />
+    );
+  }
 
   // Mode selector — only shown if user arrives directly (not via SegmentPhases)
   if (showModeSelector) {
