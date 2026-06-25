@@ -178,6 +178,7 @@ import { StickmanCanvas, usePoseReplay } from '../components/StickmanCanvas';
 import { PracticeModeSelector } from '../components/PracticeModeSelector';
 import { PreviewMode } from '../components/PreviewMode';
 import { FullRunThrough } from '../components/FullRunThrough';
+import { PerformanceTake } from '../components/PerformanceTake';
 import { extractKeyframes } from '@taal/shared/utils/KeyframeExtractor';
 import { BeatIndicator } from '../components/BeatIndicator';
 import { TeacherPersonality } from '@taal/shared/utils/TeacherPersonality';
@@ -982,6 +983,20 @@ export default function Practice() {
   const totalChunks = _allChunks.length || 1;
   const isLastChunk = currentChunkIndex >= totalChunks - 1;
   const hasAllChunks = _allChunks.length > 0;
+
+  // ── Performance take (step 10 optional) — record webcam while ref plays ──────
+  if (locationState?.performanceTakeMode) {
+    const videoSrc = getOriginalVideoUrl() || routine?.video_blob_url || '';
+    return (
+      <PerformanceTake
+        videoSrc={videoSrc}
+        startTimeMs={locationState.startTimeMs ?? 0}
+        endTimeMs={locationState.endTimeMs ?? 0}
+        title={locationState.title ?? routine?.title}
+        onClose={() => navigate(-1)}
+      />
+    );
+  }
 
   // ── Preview mode (step 2) — full choreo, full speed, with music, no loop ─────
   if (locationState?.previewMode) {
