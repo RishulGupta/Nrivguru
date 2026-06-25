@@ -149,8 +149,8 @@ function CountMapTimeline({
     }, 50);
   };
 
-  const handleTeach = () => {
-    if (!selectedBlocks.length) return;
+  // Shared helper — builds the navigation state for both Teach and Connect
+  const buildNavState = (connectMode: boolean) => {
     const first = selectedBlocks[0];
     const last  = selectedBlocks[selectedBlocks.length - 1];
 
@@ -161,13 +161,17 @@ function CountMapTimeline({
     );
     const firstDbChunk = matchingDbChunks[0] ?? dbChunks[0];
 
-    // Filter beat counts to the selected time range for the caption overlay
     const rangeCounts = (beatGrid.counts ?? []).filter(
       c => c.time >= first.startTime - 0.05 && c.time <= last.endTime + 0.05,
     );
 
-    onNavigate(
-      {
+    // Boundary timestamps = endTime of every selected block except the last
+    const boundaryTimeMs = selectedBlocks
+      .slice(0, -1)
+      .map(b => Math.round(b.endTime * 1000));
+
+    return {
+      state: {
         skipModeSelector: true,
         mode: 'teach',
         beatRange: {
@@ -177,10 +181,24 @@ function CountMapTimeline({
           endTimeMs:   Math.min(Math.round(last.endTime * 1000), videoDurationMs),
         },
         rangeCounts,
+        connectMode,
+        boundaryTimeMs,
         connectedChunkIds: matchingDbChunks.map(c => c.id),
       },
-      firstDbChunk?.id ?? 'full',
-    );
+      chunkId: firstDbChunk?.id ?? 'full',
+    };
+  };
+
+  const handleTeach = () => {
+    if (!selectedBlocks.length) return;
+    const { state, chunkId } = buildNavState(false);
+    onNavigate(state, chunkId);
+  };
+
+  const handleConnect = () => {
+    if (selectedBlocks.length < 2) return;
+    const { state, chunkId } = buildNavState(true);
+    onNavigate(state, chunkId);
   };
 
   const blockState = (idx: number): 'idle' | 'selected' | 'anchor' => {
@@ -259,6 +277,17 @@ function CountMapTimeline({
               <Play className="w-4 h-4 fill-current" />
               Teach {selectedBlocks[0].startCount}–{selectedBlocks[selectedBlocks.length - 1].endCount}
             </button>
+          </div>
+
+          {/* Connect button — only shown when 2+ phrases selected */}
+          {selectedBlocks.length >= 2 && (
+            <button
+              onClick={handleConnect}
+              className="w-full py-3 bg-violet-500/15 hover:bg-violet-500/25 border border-violet-500/30 text-violet-300 text-sm font-bold rounded-xl transition-all flex items-center justify-center gap-2"
+            >
+              🔗 Connect {selectedBlocks.length} phrases back-to-back
+            </button>
+          )}
           </div>
         </div>
       ) : (
