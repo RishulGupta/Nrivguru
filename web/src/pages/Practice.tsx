@@ -21,7 +21,7 @@ const JOINT_FIX: Record<string, string> = {
   right_wrist:    'Lead with your right wrist',
 };
 
-function ResultsOverlay({ score, prevScore, jointScores, phase, onRetry, onNext, isLastChunk }: {
+function ResultsOverlay({ score, prevScore, jointScores, phase, onRetry, onNext, isLastChunk, referencePoses, capturedUserPoses }: {
   score: FinalScore;
   prevScore: number | null;
   jointScores: JointScore[];
@@ -29,73 +29,98 @@ function ResultsOverlay({ score, prevScore, jointScores, phase, onRetry, onNext,
   onRetry: () => void;
   onNext: () => void;
   isLastChunk: boolean;
+  referencePoses: import('@taal/shared/types/pose').PoseFrame[];
+  capturedUserPoses: import('@taal/shared/types/pose').PoseLandmark[][];
 }) {
-  const pct    = Math.round(score.armScore); // arms phase: show arm score prominently
-  const delta  = prevScore !== null ? Math.round(score.overallScore - prevScore) : null;
-  const great  = pct >= 80;
-  const ok     = pct >= 55;
+  const pct   = Math.round(score.armScore);
+  const delta = prevScore !== null ? Math.round(score.overallScore - prevScore) : null;
+  const great = pct >= 80;
+  const ok    = pct >= 55;
 
-  // One worst arm joint to fix
   const worstArmJoint = jointScores
     .filter(j => j.type === 'arm' && j.score >= 0 && JOINT_LABEL[j.name])
     .sort((a, b) => a.score - b.score)[0];
 
+  // Animate pose sequences in the 2×2 grid
+  const refFrames  = referencePoses.length > 0 ? referencePoses.map(f => f.landmarks) : null;
+  const userFrames = capturedUserPoses.length > 0 ? capturedUserPoses : null;
+  const refPose  = usePoseReplay(refFrames, 5, true);
+  const userPose = usePoseReplay(userFrames, 5, true);
+
   return (
-    <div className="fixed inset-0 z-40 bg-black/90 backdrop-blur-sm flex flex-col items-center justify-center p-6 gap-5 animate-in fade-in duration-300">
+    <div className="fixed inset-0 z-40 bg-black flex flex-col p-4 gap-3 animate-in fade-in duration-300 overflow-hidden">
 
-      {/* Celebration / emoji */}
-      <div className="text-6xl animate-in zoom-in duration-400">
-        {great ? '🔥' : ok ? '💪' : '🌱'}
+      {/* Score header */}
+      <div className="flex items-center justify-between shrink-0 pt-8 px-2">
+        <div>
+          <p className="text-white/40 text-xs uppercase tracking-widest">Your score</p>
+          <div className={`text-5xl font-bold tabular-nums ${great ? 'text-green-400' : ok ? 'text-violet-400' : 'text-white'}`}>
+            {pct}<span className="text-2xl font-normal text-white/30">%</span>
+          </div>
+          {delta !== null && (
+            <p className={`text-xs font-semibold mt-0.5 ${delta > 0 ? 'text-green-400' : delta < 0 ? 'text-red-400' : 'text-white/30'}`}>
+              {delta > 0 ? `+${delta}` : delta} from last try
+            </p>
+          )}
+        </div>
+        <div className="text-5xl">{great ? '🔥' : ok ? '💪' : '🌱'}</div>
       </div>
 
-      {/* Score */}
-      <div className="text-center">
-        <div className={`text-7xl font-bold tabular-nums ${great ? 'text-green-400' : ok ? 'text-violet-400' : 'text-white'}`}>
-          {pct}<span className="text-3xl font-normal text-white/40">%</span>
+      {/* 2×2 stickman comparison grid */}
+      <div className="grid grid-cols-2 grid-rows-2 gap-2 flex-1 min-h-0">
+        {/* [0,0] Reference stickman */}
+        <div className="relative rounded-2xl overflow-hidden bg-[#0a0a12] border border-white/8">
+          {refPose ? (
+            <StickmanCanvas landmarks={refPose} mode="upper_body" smooth={false} width={300} height={200} color="rgba(167,139,250,0.9)" />
+          ) : (
+            <div className="absolute inset-0 flex items-center justify-center"><p className="text-white/20 text-xs">No reference</p></div>
+          )}
+          <span className="absolute top-2 left-2 text-[9px] text-violet-300/60 bg-black/50 px-1.5 py-0.5 rounded">Dancer</span>
         </div>
-        {delta !== null && (
-          <p className={`text-sm font-semibold mt-1 ${delta > 0 ? 'text-green-400' : delta < 0 ? 'text-red-400' : 'text-white/40'}`}>
-            {delta > 0 ? `+${delta}` : delta} pts from last try
-          </p>
-        )}
-        {delta === null && (
-          <p className="text-white/40 text-sm mt-1">
-            {great ? 'Great start!' : ok ? 'Nice effort!' : 'Keep going!'}
-          </p>
-        )}
-      </div>
 
-      {/* One specific fix — only if not great */}
-      {!great && worstArmJoint && (
-        <div className="bg-violet-500/10 border border-violet-500/20 rounded-2xl px-5 py-4 text-center max-w-xs w-full">
-          <p className="text-white/50 text-[10px] uppercase tracking-widest mb-1">One thing to fix</p>
-          <p className="text-white font-medium text-sm">
-            {JOINT_FIX[worstArmJoint.name] ?? `Work on your ${JOINT_LABEL[worstArmJoint.name]}`}
-          </p>
+        {/* [0,1] User stickman */}
+        <div className="relative rounded-2xl overflow-hidden bg-[#0a120a] border border-white/8">
+          {userPose ? (
+            <StickmanCanvas landmarks={userPose} mode="upper_body" smooth={false} width={300} height={200}
+              jointScores={jointScores.length > 0
+                ? Object.fromEntries(jointScores.map(j => [JOINT_NAME_TO_IDX[j.name] ?? j.name, j.score])) as any
+                : undefined}
+            />
+          ) : (
+            <div className="absolute inset-0 flex items-center justify-center"><p className="text-white/20 text-xs">No data</p></div>
+          )}
+          <span className="absolute top-2 left-2 text-[9px] text-emerald-300/60 bg-black/50 px-1.5 py-0.5 rounded">You</span>
         </div>
-      )}
 
-      {/* Weaker side — only surface if significant */}
-      {score.weakerSide && (
-        <p className="text-amber-300/70 text-xs">
-          Your {score.weakerSide} side is lagging — focus there
-        </p>
-      )}
+        {/* [1,0] Fix tip */}
+        <div className="rounded-2xl bg-violet-500/8 border border-violet-500/20 flex flex-col justify-center p-4">
+          {!great && worstArmJoint ? (
+            <>
+              <p className="text-violet-300/50 text-[9px] uppercase tracking-widest mb-1">Fix this</p>
+              <p className="text-white font-semibold text-sm leading-tight">
+                {JOINT_FIX[worstArmJoint.name] ?? `Work on your ${JOINT_LABEL[worstArmJoint.name]}`}
+              </p>
+            </>
+          ) : (
+            <>
+              <p className="text-green-400/60 text-[9px] uppercase tracking-widest mb-1">Looking great</p>
+              <p className="text-white font-semibold text-sm">Arms are on point 🎯</p>
+            </>
+          )}
+          {score.weakerSide && (
+            <p className="text-amber-300/60 text-[10px] mt-2">{score.weakerSide} side needs more focus</p>
+          )}
+        </div>
 
-      {/* Actions */}
-      <div className="flex gap-3 w-full max-w-xs pt-2">
-        <button
-          onClick={onRetry}
-          className="flex-1 bg-white/10 hover:bg-white/20 text-white font-bold py-4 rounded-2xl transition-all text-base"
-        >
-          🔄 Again
-        </button>
-        <button
-          onClick={onNext}
-          className="flex-1 bg-primary hover:bg-primary/90 text-white font-bold py-4 rounded-2xl transition-all shadow-[0_0_20px_rgba(147,51,234,0.3)] text-base"
-        >
-          {isLastChunk && (phase === 'combine' || phase === 'full') ? '✅ Finish' : '➡️ Next'}
-        </button>
+        {/* [1,1] Actions */}
+        <div className="flex flex-col gap-2 justify-center">
+          <button onClick={onRetry} className="w-full bg-white/10 hover:bg-white/20 text-white font-bold py-3.5 rounded-2xl transition-all text-sm">
+            🔄 Try again
+          </button>
+          <button onClick={onNext} className="w-full bg-primary hover:bg-primary/90 text-white font-bold py-3.5 rounded-2xl transition-all shadow-[0_0_15px_rgba(147,51,234,0.3)] text-sm">
+            {isLastChunk && (phase === 'combine' || phase === 'full') ? '✅ Finish' : '➡️ Next'}
+          </button>
+        </div>
       </div>
     </div>
   );
@@ -148,6 +173,7 @@ import { usePoseDetection } from '../hooks/usePoseDetection';
 import { speechManager } from '@taal/shared/utils/SpeechManager';
 import { countingSystem } from '@taal/shared/utils/CountingSystem';
 import { TeachPhase } from '../components/TeachPhase';
+import { StickmanCanvas, usePoseReplay } from '../components/StickmanCanvas';
 import { PracticeModeSelector } from '../components/PracticeModeSelector';
 import { extractKeyframes } from '@taal/shared/utils/KeyframeExtractor';
 import { BeatIndicator } from '../components/BeatIndicator';
@@ -236,6 +262,9 @@ export default function Practice() {
   const [keyframes, setKeyframes] = useState<PoseFrame[]>([]);
   const [showWatchOverlay, setShowWatchOverlay] = useState(false);
   const [refVideoPlaying, setRefVideoPlaying] = useState(false);
+  // Capture user pose frames during practice for 2×2 results replay
+  const capturedUserPosesRef = useRef<import('@taal/shared/types/pose').PoseLandmark[][]>([]);
+  const captureFrameCounterRef = useRef(0);
 
   // ── Modules ──
   const difficultyScaler = useRef(new DifficultyScaler()).current;
@@ -638,9 +667,13 @@ export default function Practice() {
 
       if (v && w && isPractice && !attemptComplete) {
         if (v.paused && !pendingAdjustment) v.play().catch(() => {});
-        // Only send frames when webcam has actual pixel data (readyState ≥ 2)
         if ((!v.paused || pendingAdjustment) && w.readyState >= 2) {
           processFrame(w, v.currentTime * 1000, focusArea as FocusArea);
+        }
+        // Sample user pose at ~5fps for results replay
+        captureFrameCounterRef.current++;
+        if (captureFrameCounterRef.current % 6 === 0 && userPose) {
+          capturedUserPosesRef.current.push([...userPose]);
         }
       }
       animationId = requestAnimationFrame(loop);
@@ -842,6 +875,8 @@ export default function Practice() {
     setFinalScore(null);
     setProprioQuestion(null);
     lastBreathingCueIndex.current = -1;
+    capturedUserPosesRef.current = [];
+    captureFrameCounterRef.current = 0;
     sendSessionEvent({ type: 'RESTART_CHUNK' });
   };
 
@@ -1225,24 +1260,24 @@ export default function Practice() {
             </div>
           )}
 
-          {/* Skeleton overlay */}
-          <div className={`absolute inset-0 pointer-events-none ${isMirrorMode ? 'scale-x-[-1]' : ''}`}>
-            {userPose && (
-              <SkeletonCanvas
+          {/* Stickman overlay — user pose with reference ghost behind */}
+          {userPose && (
+            <div className="absolute inset-0 pointer-events-none">
+              <StickmanCanvas
                 landmarks={userPose}
-                refLandmarks={isMirrorMode && currentRefPose
+                ghostLandmarks={isMirrorMode && currentRefPose
                   ? currentRefPose.map(lm => ({ ...lm, x: 1 - lm.x }))
-                  : currentRefPose}
-                focusArea={phase as any}
-                showArrows={false}
+                  : currentRefPose ?? undefined}
+                mode={focusArea === 'legs' ? 'full_body' : 'upper_body'}
+                smooth={true}
                 width={640}
                 height={480}
                 jointScores={jointScores.length > 0
                   ? Object.fromEntries(jointScores.map(j => [JOINT_NAME_TO_IDX[j.name] ?? j.name, j.score])) as any
                   : undefined}
               />
-            )}
-          </div>
+            </div>
+          )}
 
           {/* Ambient score dot */}
           {!attemptComplete && (
@@ -1281,6 +1316,8 @@ export default function Practice() {
           onRetry={handleRetry}
           onNext={handleNextPhase}
           isLastChunk={isLastChunk}
+          referencePoses={referencePoses}
+          capturedUserPoses={capturedUserPosesRef.current}
         />
       )}
     </div>
