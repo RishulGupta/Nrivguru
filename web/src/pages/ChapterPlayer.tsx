@@ -120,6 +120,99 @@ function generateChapters(chunks: DbChunk[], durationMs: number): Chapter[] {
   return chapters;
 }
 
+// ── Motion beat extraction ────────────────────────────────────────────────────
+
+function extractMotionBeats(frames: any[], startTimeMs: number, endTimeMs: number): BeatCount[] {
+  if (!Array.isArray(frames) || frames.length < 8) return [];
+  const durationSec = (endTimeMs - startTimeMs) / 1000;
+  if (durationSec <= 0) return [];
+  const fps = frames.length / durationSec;
+
+  const getLM = (frame: any, idx: number): { x: number; y: number; vis: number } | null => {
+    if (!frame) return null;
+    const lms: any[] = Array.isArray(frame)
+      ? frame
+      : (frame.landmarks ?? frame.pose_landmarks ?? frame.world_landmarks ?? null);
+    if (!Array.isArray(lms) || !lms[idx]) return null;
+    const lm = lms[idx];
+    if (Array.isArray(lm)) return { x: lm[0] ?? 0, y: lm[1] ?? 0, vis: lm[3] ?? 1 };
+    return { x: lm.x ?? 0, y: lm.y ?? 0, vis: lm.visibility ?? lm.score ?? 1 };
+  };
+
+  // Hips (23,24) weight 2, shoulders (11,12) weight 1.5, knees (25,26) weight 1
+  const JOINTS: [number, number][] = [[23, 2], [24, 2], [11, 1.5], [12, 1.5], [25, 1], [26, 1]];
+
+  const energy = new Float32Array(frames.length);
+  for (let i = 1; i < frames.length; i++) {
+    let e = 0;
+    for (const [idx, w] of JOINTS) {
+      const prev = getLM(frames[i - 1], idx);
+      const curr = getLM(frames[i], idx);
+      if (!prev || !curr || curr.vis < 0.25) continue;
+      const dx = curr.x - prev.x;
+      const dy = curr.y - prev.y;
+      e += w * curr.vis * Math.sqrt(dx * dx + dy * dy);
+    }
+    energy[i] = e;
+  }
+
+  // Gaussian smooth (~fps/4 window)
+  const win = Math.max(2, Math.round(fps / 4));
+  const smoothed = new Float32Array(frames.length);
+  for (let i = 0; i < energy.length; i++) {
+    let sum = 0, wsum = 0;
+    for (let j = Math.max(0, i - win); j <= Math.min(energy.length - 1, i + win); j++) {
+      const gw = Math.exp(-0.5 * ((j - i) / (win * 0.5)) ** 2);
+      sum += energy[j] * gw; wsum += gw;
+    }
+    smoothed[i] = wsum > 0 ? sum / wsum : 0;
+  }
+
+  // Dynamic threshold: mean + 0.3σ
+  const mean = smoothed.reduce((a, b) => a + b, 0) / smoothed.length;
+  let variance = 0;
+  for (let i = 0; i < smoothed.length; i++) variance += (smoothed[i] - mean) ** 2;
+  const std = Math.sqrt(variance / smoothed.length);
+  const threshold = mean + 0.3 * std;
+
+  // Peak pick: min gap = 150ms
+  const minDist = Math.max(3, Math.round(fps * 0.15));
+  const peaks: number[] = [];
+  let lastPeak = -minDist;
+
+  for (let i = 1; i < smoothed.length - 1; i++) {
+    if (smoothed[i] < threshold) continue;
+    if (smoothed[i] <= smoothed[i - 1] || smoothed[i] < smoothed[i + 1]) continue;
+    if (i - lastPeak < minDist) {
+      if (peaks.length && smoothed[i] > smoothed[peaks[peaks.length - 1]]) {
+        peaks[peaks.length - 1] = i; lastPeak = i;
+      }
+      continue;
+    }
+    peaks.push(i); lastPeak = i;
+  }
+
+  return peaks.map((fi, i) => ({
+    count: (i % 8) + 1,
+    time: startTimeMs / 1000 + fi / fps,
+  }));
+}
+
+function generateSyntheticBeats(startMs: number, endMs: number, bpm: number): BeatCount[] {
+  const safeBpm = bpm > 0 ? bpm : 120;
+  const beatInterval = 60 / safeBpm;
+  const beats: BeatCount[] = [];
+  let t = startMs / 1000;
+  let count = 1;
+  const endS = endMs / 1000;
+  while (t <= endS + beatInterval * 0.5) {
+    beats.push({ count, time: t });
+    t += beatInterval;
+    count = count >= 8 ? 1 : count + 1;
+  }
+  return beats;
+}
+
 // ── Gemini cue generation for teach chapters ───────────────────────────────────
 
 const GEMINI_KEY = (import.meta as any).env?.VITE_GEMINI_API_KEY ?? '';
@@ -163,16 +256,19 @@ function speakAndWait(text: string, rate = 0.9): Promise<void> {
 }
 
 // ── TeachContent ───────────────────────────────────────────────────────────────
-// Plays the reference video at 0.5× and pauses at each beat to narrate a cue.
+// Pauses at each beat, narrates a Gemini cue, then resumes.
+// Phase flow: fetching → ready (tap to begin) → teaching
 
-function TeachContent({ chapter, videoRef, rangeCounts, chunkDesc, onEnd }: {
+function TeachContent({ chapter, videoRef, videoSrc, effectiveCounts, chunkDesc, bpm, onEnd }: {
   chapter: Chapter;
   videoRef: React.RefObject<HTMLVideoElement>;
-  rangeCounts?: BeatCount[];
+  videoSrc: string;
+  effectiveCounts: BeatCount[] | undefined;
   chunkDesc: string;
+  bpm: number;
   onEnd: () => void;
 }) {
-  const [loadingCues, setLoadingCues] = useState(true);
+  const [phase, setPhase] = useState<'fetching' | 'ready' | 'teaching'>('fetching');
   const [currentCount, setCurrentCount] = useState<number | null>(null);
   const [currentCue, setCurrentCue] = useState('');
   const cuesRef = useRef<Record<number, string>>({});
@@ -181,36 +277,46 @@ function TeachContent({ chapter, videoRef, rangeCounts, chunkDesc, onEnd }: {
   // Fetch Gemini cues once on mount
   useEffect(() => {
     activeRef.current = true;
-    const counts = rangeCounts?.map(rc => rc.count) ?? [];
+    const counts = effectiveCounts?.map(rc => rc.count) ?? [];
     fetchTeachCues(chunkDesc, counts).then(c => {
       if (!activeRef.current) return;
       cuesRef.current = c;
-      setLoadingCues(false);
+      setPhase('ready');
     });
     return () => { activeRef.current = false; window.speechSynthesis?.cancel(); };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Once cues are ready, drive the beat-by-beat teach loop
+  // User taps "Begin Lesson" → unlocks speech synthesis + starts loop
+  const handleTapBegin = useCallback(() => {
+    // Silent utterance to unlock speech synthesis in this gesture stack
+    if (window.speechSynthesis) {
+      const unlock = new SpeechSynthesisUtterance('');
+      window.speechSynthesis.cancel();
+      window.speechSynthesis.speak(unlock);
+    }
+    setPhase('teaching');
+  }, []);
+
+  // Teaching loop — runs when phase becomes 'teaching'
   useEffect(() => {
-    if (loadingCues) return;
+    if (phase !== 'teaching') return;
     const v = videoRef.current;
     if (!v) { onEnd(); return; }
 
-    // If no beat grid data, just play through and end
-    const beats = rangeCounts && rangeCounts.length > 0 ? rangeCounts : null;
-    if (!beats) {
-      v.muted = true;
-      v.playbackRate = 0.5;
-      const onEnded = () => { if (activeRef.current) onEnd(); };
-      v.addEventListener('ended', onEnded, { once: true });
-      v.play().then(() => { v.playbackRate = 0.5; });
-      return () => v.removeEventListener('ended', onEnded);
-    }
-
-    let beatIdx = 0;
     let running = true;
 
     const runLoop = async () => {
+      // Ensure video source is loaded
+      if (videoSrc && v.readyState < 2) {
+        if (!v.src) { v.src = videoSrc; v.load(); }
+        await new Promise<void>(r => {
+          if (v.readyState >= 2) { r(); return; }
+          const h = () => r();
+          v.addEventListener('canplay', h, { once: true });
+          setTimeout(r, 5000);
+        });
+      }
+
       // Seek to chapter start
       await new Promise<void>(resolve => {
         const target = chapter.startTimeMs / 1000;
@@ -221,65 +327,91 @@ function TeachContent({ chapter, videoRef, rangeCounts, chunkDesc, onEnd }: {
 
       v.muted = true;
       v.playbackRate = 0.5;
-      await v.play();
+      try { await v.play(); } catch {}
+      if (v) v.playbackRate = 0.5;
 
-      while (running && beatIdx < beats.length) {
-        const beat = beats[beatIdx];
+      // Priority: effectiveCounts (audio/motion) → synthetic at BPM
+      const beats = effectiveCounts && effectiveCounts.length > 0
+        ? effectiveCounts
+        : generateSyntheticBeats(chapter.startTimeMs, chapter.endTimeMs, bpm);
 
-        // Wait until video reaches this beat's timestamp
+      for (let i = 0; i < beats.length && running; i++) {
+        const beat = beats[i];
+
+        // Wait until video reaches this beat
         await new Promise<void>(resolve => {
           const check = () => {
-            if (!running) { resolve(); return; }
-            if (v.currentTime >= beat.time - 0.04) { resolve(); return; }
+            if (!running || !v) { resolve(); return; }
+            if (v.ended || v.currentTime >= beat.time - 0.04) { resolve(); return; }
             requestAnimationFrame(check);
           };
           requestAnimationFrame(check);
         });
-        if (!running) break;
+        if (!running || v.ended) break;
 
         v.pause();
         setCurrentCount(beat.count);
         const cue = cuesRef.current[beat.count] ?? '';
         setCurrentCue(cue);
 
-        const text = cue ? `Count ${beat.count}. ${cue}.` : `Count ${beat.count}.`;
-        await speakAndWait(text);
+        await speakAndWait(cue ? `Count ${beat.count}. ${cue}.` : `Count ${beat.count}.`);
         if (!running) break;
 
-        // Brief visual pause after speech
-        await new Promise(r => setTimeout(r, 350));
+        await new Promise(r => setTimeout(r, 300));
         if (!running) break;
 
-        beatIdx++;
-        if (beatIdx < beats.length) {
-          v.play().then(() => { v.playbackRate = 0.5; });
+        if (i < beats.length - 1) {
+          try { await v.play(); } catch {}
+          if (v) v.playbackRate = 0.5;
         }
       }
 
-      if (running) {
-        setCurrentCount(null);
-        onEnd();
-      }
+      if (running) { setCurrentCount(null); onEnd(); }
     };
 
     runLoop();
-    return () => { running = false; v.pause(); window.speechSynthesis?.cancel(); };
-  }, [loadingCues]); // eslint-disable-line react-hooks/exhaustive-deps
+    return () => { running = false; if (videoRef.current) videoRef.current.pause(); window.speechSynthesis?.cancel(); };
+  }, [phase]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  return (
-    <div className="absolute inset-0 z-20 pointer-events-none flex flex-col items-center justify-end pb-28">
-      {loadingCues ? (
-        <div className="bg-black/70 backdrop-blur px-5 py-3 rounded-2xl flex items-center gap-2">
+  if (phase === 'fetching') {
+    return (
+      <div className="absolute inset-0 z-20 flex items-center justify-center pointer-events-none">
+        <div className="bg-black/75 backdrop-blur px-5 py-3 rounded-2xl flex items-center gap-2">
           <Loader2 className="w-4 h-4 animate-spin text-violet-400" />
           <span className="text-white/50 text-sm">Preparing lesson…</span>
         </div>
-      ) : currentCount !== null ? (
+      </div>
+    );
+  }
+
+  if (phase === 'ready') {
+    return (
+      <div className="absolute inset-0 z-20 flex items-center justify-center bg-black/72">
+        <div className="text-center space-y-4 px-8">
+          <div className="text-5xl">📖</div>
+          <h3 className="text-white text-xl font-bold">Lesson ready</h3>
+          <p className="text-white/40 text-sm leading-relaxed">
+            I'll pause on each count and narrate the movement.<br />Tap below to start.
+          </p>
+          <button
+            onClick={handleTapBegin}
+            className="mt-2 px-10 py-4 bg-violet-600 hover:bg-violet-500 text-white font-bold rounded-2xl transition-all shadow-[0_0_24px_rgba(139,92,246,0.45)] text-lg"
+          >
+            ▶ Begin Lesson
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  // teaching phase — count overlay
+  return (
+    <div className="absolute inset-0 z-20 pointer-events-none flex flex-col items-center justify-end pb-28">
+      {currentCount !== null ? (
         <div className="bg-black/85 backdrop-blur-md px-8 py-5 rounded-2xl text-center space-y-1 animate-in slide-in-from-bottom-3 duration-200">
           <p className="text-white/35 text-[10px] uppercase tracking-widest">Count</p>
           <p className="text-white font-black tabular-nums" style={{ fontSize: '5rem', lineHeight: 1 }}>{currentCount}</p>
-          {currentCue && (
-            <p className="text-violet-300 text-sm font-semibold mt-1">{currentCue}</p>
-          )}
+          {currentCue && <p className="text-violet-300 text-sm font-semibold mt-1">{currentCue}</p>}
         </div>
       ) : (
         <div className="bg-black/60 backdrop-blur px-5 py-2 rounded-xl">
@@ -493,6 +625,91 @@ const JOINT_IDX: Record<string, number> = {
   left_knee: 25, right_knee: 26, left_ankle: 27, right_ankle: 28,
 };
 
+// ── WarmupChapter ─────────────────────────────────────────────────────────────
+
+const WARMUP_EXERCISES = [
+  { name: 'Neck Rolls', icon: '🔄', desc: 'Slowly roll your head in a full circle, 3 times each way.' },
+  { name: 'Shoulder Shrugs', icon: '💪', desc: 'Raise both shoulders to your ears, hold 2 s, then release.' },
+  { name: 'Hip Circles', icon: '🌀', desc: 'Hands on hips, draw big slow circles — loosen that core.' },
+  { name: 'Wrist Rolls', icon: '✊', desc: 'Roll both wrists forward and backward, loosen the joints.' },
+  { name: 'Arm Swings', icon: '🦅', desc: 'Swing both arms front to back, let the momentum build.' },
+  { name: 'March in Place', icon: '🚶', desc: 'High knees, alternating — get the blood pumping!' },
+];
+
+const WARMUP_TOTAL_SECS = 60;
+const WARMUP_PER_EXERCISE = Math.floor(WARMUP_TOTAL_SECS / WARMUP_EXERCISES.length); // 10s each
+
+function WarmupChapter({ onDone }: { onDone: () => void }) {
+  const [remaining, setRemaining] = useState(WARMUP_TOTAL_SECS);
+  const firedRef = useRef(false);
+  const onDoneRef = useRef(onDone);
+  useEffect(() => { onDoneRef.current = onDone; }, [onDone]);
+
+  const exerciseIdx = Math.min(
+    WARMUP_EXERCISES.length - 1,
+    Math.floor((WARMUP_TOTAL_SECS - remaining) / WARMUP_PER_EXERCISE),
+  );
+  const exercise = WARMUP_EXERCISES[exerciseIdx];
+  const exerciseRemaining = WARMUP_PER_EXERCISE - ((WARMUP_TOTAL_SECS - remaining) % WARMUP_PER_EXERCISE);
+
+  useEffect(() => {
+    if (remaining <= 0) {
+      if (!firedRef.current) { firedRef.current = true; onDoneRef.current(); }
+      return;
+    }
+    const t = setTimeout(() => setRemaining(r => r - 1), 1000);
+    return () => clearTimeout(t);
+  }, [remaining]);
+
+  const radius = 42;
+  const circ = 2 * Math.PI * radius;
+  const pct = remaining / WARMUP_TOTAL_SECS;
+
+  return (
+    <div className="h-full flex items-center justify-center bg-black">
+      <div className="max-w-sm w-full text-center space-y-6 px-6">
+        {/* Total countdown ring */}
+        <div className="flex justify-center">
+          <svg width="108" height="108" className="-rotate-90">
+            <circle cx="54" cy="54" r={radius} fill="none" stroke="rgba(255,255,255,0.05)" strokeWidth="6" />
+            <circle cx="54" cy="54" r={radius} fill="none" stroke="rgba(139,92,246,0.65)" strokeWidth="6"
+              strokeDasharray={`${circ * pct} ${circ}`} strokeLinecap="round"
+              style={{ transition: 'stroke-dasharray 1s linear' }} />
+            <text x="54" y="54" textAnchor="middle" dominantBaseline="central" fill="white" fontSize="22" fontWeight="bold"
+              style={{ transform: 'rotate(90deg)', transformOrigin: '54px 54px' }}>{remaining}</text>
+          </svg>
+        </div>
+
+        {/* Exercise prompt */}
+        <div className="space-y-2">
+          <div className="text-6xl">{exercise.icon}</div>
+          <h2 className="text-2xl font-bold text-white">{exercise.name}</h2>
+          <p className="text-white/45 text-sm leading-relaxed">{exercise.desc}</p>
+          <p className="text-white/20 text-xs">{exerciseRemaining}s left on this exercise</p>
+
+          {/* Progress dots */}
+          <div className="flex justify-center gap-2 pt-2">
+            {WARMUP_EXERCISES.map((_, i) => (
+              <div key={i} className={`rounded-full transition-all duration-500 ${
+                i < exerciseIdx ? 'w-2 h-2 bg-violet-500'
+                : i === exerciseIdx ? 'w-3 h-3 bg-violet-400'
+                : 'w-2 h-2 bg-white/12'
+              }`} />
+            ))}
+          </div>
+        </div>
+
+        <button
+          onClick={() => { if (!firedRef.current) { firedRef.current = true; onDoneRef.current(); } }}
+          className="w-full py-3.5 bg-white/7 hover:bg-white/13 text-white/50 text-sm font-medium rounded-2xl transition-all border border-white/8"
+        >
+          Skip warmup →
+        </button>
+      </div>
+    </div>
+  );
+}
+
 // ── ChapterPlayer ─────────────────────────────────────────────────────────────
 
 export default function ChapterPlayer() {
@@ -552,6 +769,26 @@ export default function ChapterPlayer() {
     const v = refVideoRef.current;
     return v && v.duration > 0 ? v.duration * 1000 : 0;
   }, []);
+
+  // Motion-derived beat fallback when no beat_grid_json (extracted from pose_slice_json)
+  const motionBeats = useMemo((): BeatCount[] | undefined => {
+    if (beatGrid) return undefined;
+    if (!chapter || chapter.type === 'warmup' || chapter.type === 'watch') return undefined;
+    const chunkIdx = chapter.chunkIndices[0];
+    if (chunkIdx === undefined) return undefined;
+    const chunk = routine?.chunks.find(c => c.chunk_index === chunkIdx);
+    if (!chunk?.pose_slice_json) return undefined;
+    try {
+      const frames = typeof chunk.pose_slice_json === 'string'
+        ? JSON.parse(chunk.pose_slice_json) as any[]
+        : chunk.pose_slice_json as any[];
+      const beats = extractMotionBeats(frames, chunk.start_time_ms, chunk.end_time_ms);
+      return beats.length > 0 ? beats : undefined;
+    } catch { return undefined; }
+  }, [beatGrid, chapter, routine]);
+
+  // Best available beat data: audio beats → motion beats → undefined (synthetic used in TeachContent)
+  const effectiveRangeCounts = rangeCounts ?? motionBeats;
 
   // Split screen: only for chapters with showSplit = true AND camera is on AND stream acquired
   const showSplit = !!(chapter?.showSplit && cameraMode !== 'off' && hasWebcam);
@@ -664,12 +901,21 @@ export default function ChapterPlayer() {
     videoCleanupRef.current?.(); videoCleanupRef.current = null;
     window.speechSynthesis?.cancel();
 
-    // Warmup and Teach chapters don't use the generic video start logic here —
-    // Teach is handled by TeachContent; Warmup has its own UI.
-    if (ch.type === 'warmup' || ch.type === 'teach') return;
+    if (ch.type === 'warmup') return;
 
     const v = refVideoRef.current;
     if (!v) return;
+
+    // Teach is driven by TeachContent — just ensure video source is loaded and pause any prior playback
+    if (ch.type === 'teach') {
+      v.pause();
+      if (loadedSrcRef.current !== videoSrc && videoSrc) {
+        loadedSrcRef.current = videoSrc;
+        v.src = videoSrc;
+        v.load();
+      }
+      return;
+    }
 
     // Fix: use video.ended + timeupdate for reliable EoC detection
     const onEnded = () => handleChapterEnd();
@@ -869,19 +1115,8 @@ export default function ChapterPlayer() {
         {/* ── 70% main content ── */}
         <div className="flex-[7] min-w-0 relative overflow-hidden">
 
-          {/* Warmup */}
-          {chapter?.type === 'warmup' && (
-            <div className="h-full flex items-center justify-center bg-black">
-              <div className="max-w-sm text-center space-y-6 px-6">
-                <div className="text-5xl">🏋️</div>
-                <h2 className="text-xl font-bold text-white">Warm Up</h2>
-                <p className="text-white/45 text-sm leading-relaxed">Neck rolls, shoulder shrugs, hip circles, wrist rolls, and light marching in place.</p>
-                <button onClick={handleNext} className="w-full py-4 bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded-2xl transition-all">
-                  I'm warmed up → Let's go
-                </button>
-              </div>
-            </div>
-          )}
+          {/* Warmup — timed guided warmup */}
+          {chapter?.type === 'warmup' && <WarmupChapter onDone={handleNext} />}
 
           {/* All video chapters */}
           {chapter?.type !== 'warmup' && (
@@ -912,15 +1147,17 @@ export default function ChapterPlayer() {
                     key={chapter.id}
                     chapter={chapter}
                     videoRef={refVideoRef}
-                    rangeCounts={rangeCounts}
+                    videoSrc={videoSrc}
+                    effectiveCounts={effectiveRangeCounts}
                     chunkDesc={teachChunkDesc}
+                    bpm={bpm}
                     onEnd={handleChapterEnd}
                   />
                 )}
 
                 {/* Beat count caption — muted beat chapters (not teach, not watch) */}
                 {isPlaying && chapter?.muted && chapter?.type !== 'teach' && chapter?.type !== 'watch' && (
-                  <CountCaption videoRef={refVideoRef} rangeCounts={rangeCounts} bpm={bpm} startTimeMs={chapter.startTimeMs} />
+                  <CountCaption videoRef={refVideoRef} rangeCounts={effectiveRangeCounts} bpm={bpm} startTimeMs={chapter.startTimeMs} />
                 )}
 
                 {/* Chapter badge top-left */}
