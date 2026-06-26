@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { ArrowLeft, Camera, CameraOff, Cpu, Play, Loader2 } from 'lucide-react';
+import { ArrowLeft, Camera, CameraOff, Cpu, Play, Pause, SkipBack, Loader2 } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 import { useAuthStore } from '../store/useStore';
 import { getOriginalVideoUrl } from '../utils/videoStore';
@@ -199,83 +199,324 @@ function extractMotionBeats(frames: any[], startTimeMs: number, endTimeMs: numbe
 }
 
 
-// ── Gemini cue generation for teach chapters ───────────────────────────────────
+// ── TeachPlan types ────────────────────────────────────────────────────────────
 
-const GEMINI_KEY = (import.meta as any).env?.VITE_GEMINI_API_KEY ?? '';
+interface PausePoint { count: number; callout: string; }
+interface BuildStep {
+  countRange: [number, number];
+  reps: number;
+  pausePoint?: PausePoint;
+  narrationTexts: string[]; // one synthesized phrase per rep
+}
+interface TeachPlan {
+  beats: BeatCount[];
+  cues: Map<number, string>;
+  descriptions: Map<number, string>; // richer per-count teacher phrases
+  pausePoints: PausePoint[];
+  steps: BuildStep[];
+  connectors: string[];
+}
+type TeachPhase = 'computing' | 'teaching' | 'clean_pass' | 'done';
 
-// Generic fallback cues used when Gemini is rate-limited or unavailable
-const FALLBACK_CUES: Record<number, string> = {
-  1: 'Step right foot to the side',
-  2: 'Shift your weight right',
-  3: 'Both arms swing forward',
-  4: 'Chest pops, hold strong',
-  5: 'Step left foot to the side',
-  6: 'Shift your weight left',
-  7: 'Arms pull back and down',
-  8: 'Hold — reset for next round',
-};
+// ── Joint delta → short phrase ─────────────────────────────────────────────────
 
-// Module-level cache: avoids re-calling Gemini on every loop / Strict Mode double-invoke
-const _cueCache = new Map<string, Record<string, string>>();
-let _pendingFetch: Map<string, Promise<Record<string, string>>> = new Map();
+function jointDeltaPhrase(joint: string, dx: number, dy: number): string {
+  const side = joint.includes('left') ? 'left' : 'right';
+  const isArm = joint.includes('wrist') || joint.includes('elbow') || joint.includes('shoulder');
+  const isLeg = joint.includes('knee') || joint.includes('ankle');
+  const isHip = joint.includes('hip');
+  if (isArm) {
+    if (Math.abs(dx) > Math.abs(dy)) return `${side} arm out`;
+    return dy < 0 ? `${side} arm up` : `${side} arm down`;
+  }
+  if (isLeg) return Math.abs(dx) > Math.abs(dy) ? `step ${side}` : `${side} leg up`;
+  if (isHip) return Math.abs(dx) > Math.abs(dy) ? `hips ${dx > 0 ? 'right' : 'left'}` : 'hips drop';
+  return `shift ${side}`;
+}
 
-async function fetchTeachCues(chunkDesc: string, counts: number[]): Promise<Record<string, string>> {
-  const unique = [...new Set(counts.length > 0 ? counts : [1,2,3,4,5,6,7,8])].slice(0, 8);
-  const cacheKey = `${chunkDesc}|${unique.join(',')}`;
+// ── Compute per-count cues + pause points from pose_slice_json ─────────────────
 
-  if (_cueCache.has(cacheKey)) return _cueCache.get(cacheKey)!;
-  if (_pendingFetch.has(cacheKey)) return _pendingFetch.get(cacheKey)!;
+// Computed lazily to avoid forward-reference to JOINT_IDX declared later in file
+let _JOINT_KEYS: (keyof typeof JOINT_IDX)[] | null = null;
+function getJointKeys() {
+  if (!_JOINT_KEYS) _JOINT_KEYS = Object.keys(JOINT_IDX) as (keyof typeof JOINT_IDX)[];
+  return _JOINT_KEYS;
+}
+const CUE_THRESHOLD = 0.07;
+const PAUSE_THRESHOLD = 0.16;
 
-  if (!GEMINI_KEY) {
-    const fb = Object.fromEntries(unique.map(n => [String(n), FALLBACK_CUES[n] ?? `Count ${n}`]));
-    _cueCache.set(cacheKey, fb);
-    return fb;
+function computeJointCues(
+  poseSlice: any[],
+  beats: BeatCount[],
+): { cues: Map<number, string>; pausePointCounts: number[] } {
+  if (!poseSlice?.length) return { cues: new Map(), pausePointCounts: [] };
+
+  interface Delta { count: number; joint: string; delta: number; dx: number; dy: number; }
+  const deltas: Delta[] = [];
+
+  for (let i = 0; i < beats.length; i++) {
+    const t1 = beats[i].time;
+    const t2 = i + 1 < beats.length ? beats[i + 1].time : t1 + 0.5;
+    let f1Idx = 0, f2Idx = 0, d1Best = Infinity, d2Best = Infinity;
+    for (let j = 0; j < poseSlice.length; j++) {
+      const ft: number = poseSlice[j]?.t ?? poseSlice[j]?.time ?? (j / 30);
+      const a = Math.abs(ft - t1), b = Math.abs(ft - t2);
+      if (a < d1Best) { d1Best = a; f1Idx = j; }
+      if (b < d2Best) { d2Best = b; f2Idx = j; }
+    }
+    const frame1 = poseSlice[f1Idx];
+    const frame2 = poseSlice[f2Idx];
+    if (!frame1 || !frame2) continue;
+    let maxDelta = 0, maxJoint = '', maxDx = 0, maxDy = 0;
+    for (const jname of getJointKeys()) {
+      const idx = JOINT_IDX[jname];
+      const lm1 = frame1.landmarks?.[idx] ?? frame1[idx];
+      const lm2 = frame2.landmarks?.[idx] ?? frame2[idx];
+      if (!lm1 || !lm2) continue;
+      const dx = (lm2.x ?? 0) - (lm1.x ?? 0);
+      const dy = (lm2.y ?? 0) - (lm1.y ?? 0);
+      const d = Math.sqrt(dx * dx + dy * dy);
+      if (d > maxDelta) { maxDelta = d; maxJoint = jname; maxDx = dx; maxDy = dy; }
+    }
+    if (maxDelta > CUE_THRESHOLD && maxJoint) {
+      deltas.push({ count: beats[i].count, joint: maxJoint, delta: maxDelta, dx: maxDx, dy: maxDy });
+    }
   }
 
-  const promise = (async (): Promise<Record<string, string>> => {
-    const prompt = `You are a professional dance teacher breaking down: "${chunkDesc || 'this move'}".
+  const cues = new Map<number, string>();
+  deltas.forEach(d => cues.set(d.count, jointDeltaPhrase(d.joint, d.dx, d.dy)));
+  const pausePointCounts = deltas
+    .filter(d => d.delta > PAUSE_THRESHOLD)
+    .sort((a, b) => b.delta - a.delta)
+    .slice(0, 2)
+    .map(d => d.count);
+  return { cues, pausePointCounts };
+}
 
-For EACH count below write ONE crisp movement instruction (5-8 words max).
-Always name the BODY PART first then the ACTION then DIRECTION.
+// ── Generate progressive build steps ──────────────────────────────────────────
+// Step sizes are driven by cue positions so new movements get their own step.
+// Each step carries pre-built narration phrases (one per rep) as full sentences.
 
-Examples:
-1 → "Right foot steps out to side"
-2 → "Both hips drop and shift left"
-3 → "Arms swing forward and cross"
-4 → "Chest pops forward, hold"
-5 → "Left foot steps back"
-6 → "Weight shifts onto left hip"
-7 → "Both arms pull wide open"
-8 → "Clap hands, prepare to repeat"
+function generateBuildSteps(
+  beats: BeatCount[],
+  pausePointCounts: number[],
+  cues: Map<number, string>,
+): { steps: BuildStep[]; connectors: string[] } {
+  const n = beats.length;
+  if (n === 0) return { steps: [], connectors: [] };
 
-Counts to describe: ${unique.join(', ')}
+  // Build step endpoints around cue positions so each cue gets introduced naturally.
+  // Always start at 1, then jump to ~3 or first cue, then each subsequent cue, then 8.
+  const cueCounts = [...cues.keys()].sort((a, b) => a - b);
+  const ends = new Set<number>();
+  ends.add(1);                             // always introduce count 1 alone
+  const firstGroup = cueCounts.find(c => c >= 3) ?? 3;
+  ends.add(Math.min(firstGroup, Math.min(4, n)));
+  for (const c of cueCounts) { if (c < n) ends.add(c); }
+  ends.add(n);
 
-Respond ONLY with JSON, string keys: {"1":"...","2":"...",...}`;
+  const sortedEnds = [...ends].sort((a, b) => a - b);
+  const connPool = ['we go', 'now', 'right', 'from here'];
+  const shuffled = [...connPool].sort(() => Math.random() - 0.5);
 
-    try {
-      const res = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_KEY}`,
-        { method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }], generationConfig: { response_mime_type: 'application/json' } }) }
-      );
-      if (res.status === 429) throw new Error('rate-limited');
-      if (!res.ok) throw new Error(`status ${res.status}`);
-      const data = await res.json();
-      const text = data.candidates?.[0]?.content?.parts?.[0]?.text ?? '{}';
-      const parsed = JSON.parse(text.replace(/```json|```/g, '').trim());
-      _cueCache.set(cacheKey, parsed);
-      return parsed;
-    } catch {
-      // Graceful fallback — use built-in cues so teaching still works
-      const fb = Object.fromEntries(unique.map(n => [String(n), FALLBACK_CUES[n] ?? `Count ${n}`]));
-      _cueCache.set(cacheKey, fb);
-      return fb;
-    } finally {
-      _pendingFetch.delete(cacheKey);
+  // Build a natural-sounding count phrase for a given range end + rep index
+  const buildPhrase = (rangeEnd: number, repIdx: number, conn: string, isLast: boolean): string => {
+    // Connector prefix
+    const prefix = repIdx === 0
+      ? (isLast ? 'so we go' : conn)
+      : null; // second rep of same range: just counts, no prefix
+
+    const parts: string[] = [];
+    for (let c = 1; c <= rangeEnd; c++) {
+      const cue = cues.get(c)?.replace(/_/g, ' ') ?? null;
+      const isLastCount = c === rangeEnd;
+      if (cue) {
+        // Cue is spoken just before the count: "arm to right, 6"
+        parts.push(`${cue}, ${isLastCount && rangeEnd > 2 ? 'and ' : ''}${c}`);
+      } else if (isLastCount && rangeEnd > 2) {
+        parts.push(`and ${c}`);
+      } else {
+        parts.push(String(c));
+      }
     }
+
+    const countStr = parts.join(', ');
+    return prefix ? `${prefix}, ${countStr}` : countStr;
+  };
+
+  const assignedPauses = new Set<number>();
+  const steps: BuildStep[] = [];
+  const connectors: string[] = [];
+
+  sortedEnds.forEach((rangeEnd, i) => {
+    const isLast = rangeEnd === n;
+    const conn = shuffled[i % shuffled.length] ?? 'we go';
+    // First step and 3-count groups get a repeat; longer groups don't
+    const reps = rangeEnd <= 3 ? 2 : 1;
+
+    const candidate = pausePointCounts.find(p => p <= rangeEnd && !assignedPauses.has(p));
+    let pausePoint: PausePoint | undefined;
+    if (candidate !== undefined) {
+      assignedPauses.add(candidate);
+      const cueText = cues.get(candidate)?.replace(/_/g, ' ');
+      pausePoint = { count: candidate, callout: cueText ? `see — ${cueText}` : 'watch this' };
+    }
+
+    const narrationTexts = Array.from({ length: reps }, (_, r) => buildPhrase(rangeEnd, r, conn, isLast));
+    steps.push({ countRange: [1, rangeEnd], reps, pausePoint, narrationTexts });
+    connectors.push(conn);
+  });
+
+  return { steps, connectors };
+}
+
+// ── Gemini TTS pre-synthesis ────────────────────────────────────────────────────
+// All narration tokens (count words, connectors, cues, callouts) are synthesized
+// once per chapter via Gemini API, decoded to AudioBuffers, and scheduled against
+// video.currentTime via Web Audio for beat-locked delivery.
+
+const _ttsCache = new Map<string, AudioBuffer>();
+
+async function synthesizeTTS(text: string, ctx: AudioContext): Promise<AudioBuffer | null> {
+  const k = text.trim();
+  if (_ttsCache.has(k)) return _ttsCache.get(k)!;
+  const apiKey = import.meta.env.VITE_GEMINI_API_KEY ?? '';
+  if (!apiKey) return null;
+  try {
+    const res = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-tts:generateContent?key=${apiKey}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: k }] }],
+          generationConfig: {
+            responseModalities: ['AUDIO'],
+            speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Puck' } } },
+          },
+        }),
+      },
+    );
+    if (!res.ok) return null;
+    const data = await res.json();
+    const part = data?.candidates?.[0]?.content?.parts?.[0]?.inlineData;
+    if (!part?.data) return null;
+    const mimeType: string = part.mimeType ?? 'audio/pcm;rate=24000';
+    const raw = atob(part.data);
+    const bytes = new Uint8Array(raw.length);
+    for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
+    let buf: AudioBuffer;
+    if (mimeType.startsWith('audio/pcm')) {
+      const rate = parseInt(mimeType.match(/rate=(\d+)/)?.[1] ?? '24000');
+      const pcm16 = new Int16Array(bytes.buffer);
+      buf = ctx.createBuffer(1, pcm16.length, rate);
+      const ch = buf.getChannelData(0);
+      for (let i = 0; i < pcm16.length; i++) ch[i] = pcm16[i] / 32768;
+    } else {
+      buf = await ctx.decodeAudioData(bytes.buffer.slice(0));
+    }
+    _ttsCache.set(k, buf);
+    return buf;
+  } catch { return null; }
+}
+
+
+const COUNT_SPOKEN = ['', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight'];
+
+// "trying one" / "trying two to three" — spoken right before each forward isolated play
+function tryingPhrase(i: number): string {
+  return i === 1 ? 'trying one' : `trying ${COUNT_SPOKEN[i - 1]} to ${COUNT_SPOKEN[i]}`;
+}
+
+// Synthesize cue descriptions, fallback descriptions, cumulative + individual count words.
+async function presynthTeach(plan: TeachPlan, ctx: AudioContext): Promise<Map<string, AudioBuffer>> {
+  const texts = new Set<string>();
+  // Rich teacher description per count (already built in buildTeachPlan)
+  plan.descriptions.forEach(phrase => texts.add(phrase));
+  // "trying X to Y" phrases + "again" for isolated replay narration
+  texts.add('again');
+  for (let i = 1; i <= plan.beats.length; i++) texts.add(tryingPhrase(i));
+  // Cumulative count phrases: "one", "one, two", …
+  for (let c = 1; c <= plan.beats.length; c++) {
+    texts.add(COUNT_SPOKEN.slice(1, c + 1).join(', '));
+  }
+  // Individual count words for beat narration during isolated replay
+  for (let c = 1; c <= plan.beats.length; c++) {
+    texts.add(COUNT_SPOKEN[c]);
+  }
+  // "from start till X" — spoken while paused at beat[0] before each cumulative run
+  for (let i = 2; i <= plan.beats.length; i++) texts.add(`from start till ${COUNT_SPOKEN[i]}`);
+  const entries = await Promise.allSettled(
+    [...texts].map(async t => [t, await synthesizeTTS(t, ctx)] as [string, AudioBuffer | null]),
+  );
+  const map = new Map<string, AudioBuffer>();
+  for (const e of entries) {
+    if (e.status === 'fulfilled' && e.value[1]) map.set(e.value[0], e.value[1]);
+  }
+  return map;
+}
+
+// ── Module-level plan cache ────────────────────────────────────────────────────
+
+// ── Teacher-style description per count ───────────────────────────────────────
+// Generates varied natural phrases so the narrator sounds like a real instructor.
+
+function buildTeacherDescription(i: number, cue: string | undefined): string {
+  const word = COUNT_SPOKEN[i] ?? String(i);
+  if (!cue) {
+    const fillers = [
+      `on ${word}, keep the energy going`,
+      `${word} — stay smooth here`,
+      `and ${word}, just flow through it`,
+      `on ${word}, hold your posture`,
+      `${word}, maintain that rhythm`,
+      `on ${word}, keep it clean`,
+      `and ${word}, breathe through`,
+      `${word} — stay sharp`,
+    ];
+    return fillers[(i - 1) % fillers.length];
+  }
+  const c = cue.replace(/_/g, ' ');
+  const templates = [
+    `on ${word}, ${c}`,
+    `watch this — on ${word}, ${c}`,
+    `${word} is key — ${c}`,
+    `right here on ${word}, ${c}`,
+    `feel it — on ${word}, ${c}`,
+    `on ${word} make sure ${c}`,
+    `${word} — and ${c}`,
+    `now on ${word}, ${c}`,
+  ];
+  return templates[(i - 1) % templates.length];
+}
+
+const _teachPlanCache = new Map<string, TeachPlan>();
+const _teachPlanPending = new Map<string, Promise<TeachPlan>>();
+
+async function buildTeachPlan(
+  chunkId: string,
+  effectiveCounts: BeatCount[] | undefined,
+  poseSlice: any[] | undefined,
+  startMs: number,
+  endMs: number,
+): Promise<TeachPlan> {
+  if (_teachPlanCache.has(chunkId)) return _teachPlanCache.get(chunkId)!;
+  if (_teachPlanPending.has(chunkId)) return _teachPlanPending.get(chunkId)!;
+
+  const promise = (async (): Promise<TeachPlan> => {
+    const beats = ensure8Counts(effectiveCounts, startMs, endMs);
+    const { cues, pausePointCounts } = computeJointCues(poseSlice ?? [], beats);
+    const { steps, connectors } = generateBuildSteps(beats, pausePointCounts, cues);
+    const pausePoints: PausePoint[] = steps.filter(s => s.pausePoint).map(s => s.pausePoint!);
+    const descriptions = new Map<number, string>();
+    for (let i = 1; i <= beats.length; i++) descriptions.set(i, buildTeacherDescription(i, cues.get(i)));
+    const plan: TeachPlan = { beats, cues, descriptions, pausePoints, steps, connectors };
+    _teachPlanCache.set(chunkId, plan);
+    return plan;
   })();
 
-  _pendingFetch.set(cacheKey, promise);
+  _teachPlanPending.set(chunkId, promise);
+  promise.finally(() => _teachPlanPending.delete(chunkId));
   return promise;
 }
 
@@ -297,178 +538,518 @@ function ensure8Counts(effectiveCounts: BeatCount[] | undefined, startMs: number
   }));
 }
 
-// ── speakAndWait — promise-based TTS using Web Speech API ────────────────────
+// ── Helpers for TeachContent ──────────────────────────────────────────────────
 
-function speakAndWait(text: string, rate = 0.9): Promise<void> {
-  return new Promise(resolve => {
-    if (!window.speechSynthesis) { resolve(); return; }
-    window.speechSynthesis.cancel();
-    const utt = new SpeechSynthesisUtterance(text);
-    utt.rate = rate;
-    utt.onend = () => resolve();
-    utt.onerror = () => resolve();
-    // Chrome bug: speech stalls if tab is backgrounded; resolve after 4s fallback
-    const fallback = setTimeout(resolve, 4000);
-    utt.onend = () => { clearTimeout(fallback); resolve(); };
-    utt.onerror = () => { clearTimeout(fallback); resolve(); };
-    window.speechSynthesis.speak(utt);
+function seekVideo(v: HTMLVideoElement, time: number): Promise<void> {
+  return new Promise<void>(resolve => {
+    if (Math.abs(v.currentTime - time) < 0.05) { resolve(); return; }
+    v.addEventListener('seeked', resolve as () => void, { once: true });
+    setTimeout(resolve, 2000);
+    v.currentTime = time;
   });
 }
 
-// ── TeachContent ───────────────────────────────────────────────────────────────
-// Phase machine: fetching → watching (slow play-through) → teaching (beat-by-beat)
-// Auto-loops: teaching end → watching, endlessly until user taps "Skip to practice".
 
-function TeachContent({ chapter, videoRef, videoSrc, effectiveCounts, chunkDesc, bpm, onEnd }: {
+// ── VideoScrubber ──────────────────────────────────────────────────────────────
+// YouTube-style progress bar. Shows position within [startMs, endMs].
+// Click or drag to seek anywhere in that range.
+
+function VideoScrubber({ videoRef, startMs, endMs }: {
+  videoRef: React.RefObject<HTMLVideoElement>;
+  startMs: number;
+  endMs: number;
+}) {
+  const [pct, setPct] = useState(0);
+  const [hovPct, setHovPct] = useState<number | null>(null);
+  const barRef = useRef<HTMLDivElement>(null);
+  const dragging = useRef(false);
+
+  useEffect(() => {
+    const v = videoRef.current; if (!v) return;
+    let id: number;
+    const tick = () => {
+      const dur = (endMs - startMs) / 1000 || v.duration || 1;
+      const pos = Math.max(0, v.currentTime - startMs / 1000);
+      setPct(Math.min(1, pos / dur));
+      id = requestAnimationFrame(tick);
+    };
+    id = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(id);
+  }, [videoRef, startMs, endMs]);
+
+  const seekAt = (clientX: number) => {
+    const bar = barRef.current; const v = videoRef.current;
+    if (!bar || !v) return;
+    const rect = bar.getBoundingClientRect();
+    const f = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+    const dur = (endMs - startMs) / 1000 || v.duration || 1;
+    v.currentTime = startMs / 1000 + f * dur;
+  };
+
+  const fmtSec = (s: number) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
+  const hoverSec = hovPct !== null ? (startMs / 1000 + hovPct * ((endMs - startMs) / 1000 || 1)) : null;
+
+  return (
+    <div
+      ref={barRef}
+      className="absolute bottom-0 left-0 right-0 h-6 flex items-end z-25 cursor-pointer group select-none"
+      onMouseMove={e => {
+        const rect = barRef.current!.getBoundingClientRect();
+        setHovPct(Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width)));
+        if (dragging.current) seekAt(e.clientX);
+      }}
+      onMouseLeave={() => { setHovPct(null); dragging.current = false; }}
+      onMouseDown={e => { dragging.current = true; seekAt(e.clientX); }}
+      onMouseUp={() => { dragging.current = false; }}
+      onClick={e => seekAt(e.clientX)}
+      onTouchMove={e => seekAt(e.touches[0].clientX)}
+      onTouchStart={e => seekAt(e.touches[0].clientX)}
+    >
+      {/* hover time tooltip */}
+      {hoverSec !== null && (
+        <div
+          className="absolute bottom-5 text-[10px] text-white/80 bg-black/70 px-1.5 py-0.5 rounded pointer-events-none -translate-x-1/2"
+          style={{ left: `${(hovPct ?? 0) * 100}%` }}
+        >
+          {fmtSec(hoverSec)}
+        </div>
+      )}
+      {/* track */}
+      <div className="w-full h-1 group-hover:h-1.5 bg-white/15 relative transition-all duration-100">
+        {/* played */}
+        <div className="absolute inset-y-0 left-0 bg-violet-500" style={{ width: `${pct * 100}%` }} />
+        {/* hover ghost */}
+        {hovPct !== null && (
+          <div className="absolute inset-y-0 left-0 bg-white/20 pointer-events-none" style={{ width: `${hovPct * 100}%` }} />
+        )}
+        {/* thumb */}
+        <div
+          className="absolute top-1/2 w-3 h-3 rounded-full bg-violet-400 shadow opacity-0 group-hover:opacity-100 -translate-y-1/2 -translate-x-1/2 transition-opacity"
+          style={{ left: `${pct * 100}%` }}
+        />
+      </div>
+    </div>
+  );
+}
+
+// ── TeachContent (redesigned) ──────────────────────────────────────────────────
+// Progressive build: steps grow from [1-2] → [1-4] → [1-6] → [1-8], each looped
+// 2-3 times. Video runs continuously at 0.4×. Gemini TTS tokens are scheduled via
+// Web Audio against video.currentTime. At most 1-2 brief freeze-frames total.
+// Ends with 2 clean full passes, then advances to Practice.
+
+function TeachContent({
+  chapter, videoRef, videoSrc, effectiveCounts, poseSlice,
+  onEnd, onCountChange, onLabelChange, onCountdownChange, onPausedChange, onTeachStepChange, onDescribePhase, audioCtx, seekRef, controlRef,
+}: {
   chapter: Chapter;
   videoRef: React.RefObject<HTMLVideoElement>;
   videoSrc: string;
   effectiveCounts: BeatCount[] | undefined;
-  chunkDesc: string;
+  poseSlice?: any[];
   onEnd: () => void;
+  onCountChange: (count: number | null) => void;
+  onLabelChange: (label: string | null) => void;
+  onCountdownChange: (v: string | null) => void;
+  onPausedChange: (p: boolean) => void;
+  onTeachStepChange?: (step: number) => void;
+  onDescribePhase?: (active: boolean) => void;
+  audioCtx: AudioContext | null;
+  seekRef: { current: ((n: number) => void) | null };
+  controlRef: { current: { pause: () => void; resume: () => void; rewind: () => void } | null };
 }) {
-  type TeachPhase = 'fetching' | 'watching' | 'teaching';
-  const [phase, setPhase] = useState<TeachPhase>('fetching');
-  const [currentCount, setCurrentCount] = useState<number | null>(null);
-  const [currentCue, setCurrentCue] = useState('');
-  const cuesRef = useRef<Record<string, string>>({});
-  const loopRef = useRef(0);
+  const [phase, setPhase] = useState<TeachPhase>('computing');
+  const [localPaused, setLocalPaused] = useState(false);
+  const planRef = useRef<TeachPlan | null>(null);
+  const audioMapRef = useRef(new Map<string, AudioBuffer>());
+  const mountedRef = useRef(true);
+  const scheduledRef = useRef<AudioBufferSourceNode[]>([]);
+  const seekToRef = useRef<number | null>(null);
   const onEndRef = useRef(onEnd);
-  useEffect(() => { onEndRef.current = onEnd; }, [onEnd]);
-
-  // Fetch Gemini cues once on mount → auto-start watching.
-  // fetchTeachCues uses a module-level cache so this never double-calls the API.
+  const onCCRef = useRef(onCountChange);
+  const onLCRef = useRef(onLabelChange);
+  const onCDRef = useRef(onCountdownChange);
+  const onTSCRef = useRef(onTeachStepChange);
+  const onDPRef = useRef(onDescribePhase);
+  // Pause / rewind state — shared between the building loop and controlRef
+  const pauseState = useRef({ paused: false, videoWasPlaying: false, resolve: null as (() => void) | null });
+  const rewindTrig = useRef(false);
   useEffect(() => {
-    fetchTeachCues(chunkDesc, [1,2,3,4,5,6,7,8]).then(c => {
-      cuesRef.current = c;
-      setPhase('watching');
-    });
-    return () => { window.speechSynthesis?.cancel(); };
+    onEndRef.current = onEnd;
+    onCCRef.current = onCountChange;
+    onLCRef.current = onLabelChange;
+    onCDRef.current = onCountdownChange;
+    onTSCRef.current = onTeachStepChange;
+    onDPRef.current = onDescribePhase;
+  }, [onEnd, onCountChange, onLabelChange, onCountdownChange, onTeachStepChange, onDescribePhase]);
+
+  // Expose seek-to-count to parent (1-based count number)
+  useEffect(() => {
+    seekRef.current = (n: number) => {
+      seekToRef.current = n - 1; // store 0-based index
+      rewindTrig.current = true; // abort current step so loop restarts
+    };
+    return () => { seekRef.current = null; };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // WATCHING: play through slowly so student sees the full move before beat breakdown
+  // Expose pause / resume / rewind controls
   useEffect(() => {
-    if (phase !== 'watching') return;
     const v = videoRef.current;
-    if (!v) { setPhase('teaching'); return; }
-    let cancelled = false;
-    setCurrentCount(null); setCurrentCue('');
+    controlRef.current = {
+      pause: () => {
+        const ps = pauseState.current;
+        if (ps.paused) return;
+        ps.paused = true;
+        ps.videoWasPlaying = !!(v && !v.paused);
+        v?.pause();
+        window.speechSynthesis?.pause();
+        for (const s of scheduledRef.current) { try { s.stop(); } catch {} }
+        scheduledRef.current = [];
+        audioCtx?.suspend();
+        setLocalPaused(true);
+        onPausedChange(true);
+      },
+      resume: () => {
+        const ps = pauseState.current;
+        if (!ps.paused) return;
+        ps.paused = false;
+        const res = ps.resolve; ps.resolve = null;
+        res?.();
+        if (ps.videoWasPlaying) v?.play().catch(() => {});
+        window.speechSynthesis?.resume();
+        audioCtx?.resume();
+        setLocalPaused(false);
+        onPausedChange(false);
+      },
+      rewind: () => {
+        rewindTrig.current = true;
+        const ps = pauseState.current;
+        if (ps.paused) {
+          ps.paused = false;
+          ps.resolve?.(); ps.resolve = null;
+          onPausedChange(false);
+        }
+        v?.pause();
+      },
+    };
+    return () => { controlRef.current = null; };
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-    (async () => {
-      // Ensure video ready
-      if (videoSrc && !v.src) { v.src = videoSrc; v.load(); }
-      if (v.readyState < 2) {
-        await new Promise<void>(r => {
-          v.addEventListener('canplay', r, { once: true });
-          setTimeout(r, 5000);
-        });
-      }
-      if (cancelled) return;
+  // ── Init: build plan + pre-synthesize all narration tokens ─────────────────
+  useEffect(() => {
+    mountedRef.current = true;
+    const v = videoRef.current;
+    if (v && videoSrc && !v.src) { v.src = videoSrc; v.load(); }
 
-      // Seek to start
-      await new Promise<void>(r => {
-        const t = chapter.startTimeMs / 1000;
-        if (Math.abs(v.currentTime - t) < 0.05) { r(); return; }
-        v.addEventListener('seeked', r, { once: true });
-        v.currentTime = t;
+    buildTeachPlan(chapter.id, effectiveCounts, poseSlice, chapter.startTimeMs, chapter.endTimeMs)
+      .then(async plan => {
+        if (!mountedRef.current) return;
+        planRef.current = plan;
+        if (audioCtx) {
+          const bufs = await presynthTeach(plan, audioCtx);
+          if (mountedRef.current) audioMapRef.current = bufs;
+        }
+        if (mountedRef.current) setPhase('teaching');
       });
-      if (cancelled) return;
 
-      v.muted = true; v.playbackRate = 0.4;
-      try { await v.play(); } catch {}
-      if (v) v.playbackRate = 0.4;
+    return () => {
+      mountedRef.current = false;
+      for (const s of scheduledRef.current) { try { s.stop(); } catch {} }
+      onCCRef.current(null);
+    };
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-      // Wait until chunk end
-      const endS = chapter.endTimeMs > 0 ? chapter.endTimeMs / 1000 : (v.duration || 999);
-      await new Promise<void>(r => {
-        const check = () => {
-          if (cancelled || !v || v.ended || v.currentTime >= endS - 0.1) { r(); return; }
-          requestAnimationFrame(check);
-        };
-        requestAnimationFrame(check);
-      });
-
-      if (!cancelled) setPhase('teaching');
-    })();
-
-    return () => { cancelled = true; if (videoRef.current) videoRef.current.pause(); };
-  }, [phase, loopRef.current]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  // TEACHING: pause at each beat, speak count + cue, resume, auto-loop back to watching
+  // ── Building phase ─────────────────────────────────────────────────────────
+  // Per count i (1→8):
+  //   1. TELEPORT to beat[0], play cumulative 1..i at 0.4×, count narration
+  //   2. Stop → describe every count (cue or fallback)
+  //   3. REPEAT ×2 (skip for i=1):
+  //        reverse end-of-i → beats[i-1] (animated), hold 2s + show label,
+  //        play beats[i-1]→end-of-i at 0.25× with beat-locked count words
+  //   4. TELEPORT back to beat[0] (no animation)
   useEffect(() => {
     if (phase !== 'teaching') return;
     const v = videoRef.current;
-    if (!v) { setPhase('watching'); return; }
-    let cancelled = false;
+    const plan = planRef.current;
+    const ctx = audioCtx;
+    if (!v || !plan) return;
+
+    const cancel = { cancelled: false };
+
+    const stopScheduled = () => {
+      for (const s of scheduledRef.current) { try { s.stop(); } catch {} }
+      scheduledRef.current = [];
+    };
+
+    // Speak text: tries Gemini AudioBuffer, falls back to Web Speech API.
+    const speak = (text: string, wait: boolean): Promise<void> => {
+      const buf = audioMapRef.current.get(text);
+      if (buf && ctx) {
+        return new Promise(resolve => {
+          stopScheduled();
+          const src = ctx.createBufferSource();
+          src.buffer = buf;
+          src.connect(ctx.destination);
+          if (wait) {
+            src.onended = () => resolve();
+            setTimeout(() => resolve(), (buf.duration + 2) * 1000);
+          } else {
+            resolve();
+          }
+          src.start();
+          scheduledRef.current.push(src);
+        });
+      }
+      if (!window.speechSynthesis) return Promise.resolve();
+      if (!wait) {
+        window.speechSynthesis.cancel();
+        const u = new SpeechSynthesisUtterance(text); u.rate = 0.88;
+        window.speechSynthesis.speak(u);
+        return Promise.resolve();
+      }
+      return new Promise(resolve => {
+        window.speechSynthesis.cancel();
+        const u = new SpeechSynthesisUtterance(text); u.rate = 0.88;
+        const done = () => resolve();
+        u.onend = done; u.onerror = done; setTimeout(done, 7000);
+        window.speechSynthesis.speak(u);
+      });
+    };
+
+    const aborted = () => cancel.cancelled || rewindTrig.current;
+
+    // Pause-aware sleep: suspends when paused, resumes on resume(), exits on rewind/cancel
+    const sleepMs = async (ms: number): Promise<void> => {
+      const end = Date.now() + ms;
+      while (!aborted()) {
+        const ps = pauseState.current;
+        if (ps.paused) await new Promise<void>(r => { ps.resolve = r; });
+        if (aborted()) return;
+        const rem = end - Date.now();
+        if (rem <= 0) return;
+        await new Promise<void>(r => setTimeout(r, Math.min(50, rem)));
+      }
+    };
+
+    // Step-based rewind: 40 ms per step so each frame is rendered visibly
+    const reverseSeekTo = (targetTime: number): Promise<void> => new Promise(resolve => {
+      const startT = v.currentTime;
+      if (targetTime >= startT - 0.03) { v.currentTime = targetTime; resolve(); return; }
+      v.pause();
+      const dist = startT - targetTime;
+      const steps = Math.max(8, Math.min(22, Math.round(dist * 12)));
+      const stepSize = dist / steps;
+      let idx = 0;
+      const doStep = () => {
+        if (aborted()) { resolve(); return; }
+        if (idx >= steps) { v.currentTime = targetTime; resolve(); return; }
+        idx++;
+        v.currentTime = startT - idx * stepSize;
+        setTimeout(doStep, 40);
+      };
+      doStep();
+    });
 
     (async () => {
-      // Seek to start
-      await new Promise<void>(r => {
-        const t = chapter.startTimeMs / 1000;
-        if (Math.abs(v.currentTime - t) < 0.05) { r(); return; }
-        v.addEventListener('seeked', r, { once: true });
-        v.currentTime = t;
-      });
-      if (cancelled) return;
-
-      // Always teach exactly 8 counts — ensure8Counts pads with evenly-spaced
-      // positions if beat detection found fewer than 8 beats in this chunk.
-      const beats = ensure8Counts(effectiveCounts, chapter.startTimeMs, chapter.endTimeMs);
-
-      v.muted = true; v.playbackRate = 0.5;
-      try { await v.play(); } catch {}
-      if (v) v.playbackRate = 0.5;
-
-      for (let i = 0; i < beats.length && !cancelled; i++) {
-        const beat = beats[i];
-
-        // Wait for video currentTime to reach this beat
+      if (v.readyState < 2) {
         await new Promise<void>(r => {
-          const check = () => {
-            if (cancelled || !v || v.ended || v.currentTime >= beat.time - 0.04) { r(); return; }
-            requestAnimationFrame(check);
-          };
-          requestAnimationFrame(check);
+          v.addEventListener('canplay', () => r(), { once: true });
+          setTimeout(r, 5000);
         });
-        if (cancelled) break;
+      }
+      if (cancel.cancelled) return;
+      v.muted = true;
 
-        v.pause();
-        const cue = cuesRef.current[String(beat.count)] ?? FALLBACK_CUES[beat.count] ?? `Count ${beat.count}`;
-        setCurrentCount(beat.count);
-        setCurrentCue(cue);
+      const beats = plan.beats;
+      const n = beats.length;
+      const chunkEnd = chapter.endTimeMs > 0 ? chapter.endTimeMs / 1000 : (v.duration ?? 999);
+      const endOf = (c: number) => c + 1 < n ? beats[c + 1].time : chunkEnd;
 
-        // Speak count number sharp and fast, then the movement cue at natural pace
-        await speakAndWait(String(beat.count), 1.2);
-        if (cancelled) break;
-        await speakAndWait(cue, 0.88);
-        if (cancelled) break;
-
-        // Hold so user can read + absorb
-        await new Promise(r => setTimeout(r, 700));
-        if (cancelled) break;
-
-        if (i < beats.length - 1) {
-          try { await v.play(); } catch {}
-          if (v) v.playbackRate = 0.5;
+      let c = 0;
+      // Jump to seeked count or rewind by 1
+      const goToSeekOrRewind = () => {
+        if (seekToRef.current !== null) {
+          c = Math.max(0, Math.min(n - 1, seekToRef.current));
+          seekToRef.current = null;
+        } else {
+          c = Math.max(0, c - 1);
         }
+      };
+
+      while (c < n && !cancel.cancelled) {
+        // Consume a seek request queued while a prior step was running
+        if (seekToRef.current !== null) {
+          c = Math.max(0, Math.min(n - 1, seekToRef.current));
+          seekToRef.current = null;
+        }
+        rewindTrig.current = false;
+        onTSCRef.current?.(c + 1); // report 1-based step to parent for progress bar
+        const i = c + 1;
+        const countEnd = endOf(c);
+
+        // ── 1. TELEPORT to beat[0], cumulative run ──────────────────────────
+        v.pause();
+        v.currentTime = beats[0].time;
+        // For count 2+, hold at beat[0] and announce "from start till X" before playing
+        if (i > 1 && !aborted()) {
+          await speak(`from start till ${COUNT_SPOKEN[i]}`, true);
+          if (aborted()) { if (rewindTrig.current) { goToSeekOrRewind(); continue; } return; }
+        }
+        await sleepMs(80);
+        if (aborted()) { if (rewindTrig.current) { goToSeekOrRewind(); continue; } return; }
+        v.playbackRate = 0.4;
+        await v.play().catch(() => {});
+        speak(COUNT_SPOKEN.slice(1, i + 1).join(', '), false);
+
+        await new Promise<void>(resolve => {
+          const tick = () => {
+            if (aborted()) { resolve(); return; }
+            const t = v.currentTime;
+            let display: number | null = null;
+            for (let j = 0; j < i; j++) {
+              if (t >= beats[j].time - 0.14 && t < beats[j].time + 0.5) { display = j + 1; break; }
+            }
+            onCCRef.current(display);
+            if (t >= countEnd - 0.04) { resolve(); return; }
+            requestAnimationFrame(tick);
+          };
+          requestAnimationFrame(tick);
+        });
+        if (aborted()) { v.pause(); if (rewindTrig.current) { goToSeekOrRewind(); continue; } return; }
+        v.pause();
+        onCCRef.current(i);
+
+        // ── 2. DESCRIBE — show animated stickman split while narrator speaks ──
+        onDPRef.current?.(true);
+        await speak(plan.descriptions.get(i) ?? COUNT_SPOKEN[i] ?? String(i), true);
+        onDPRef.current?.(false);
+        if (aborted()) { if (rewindTrig.current) { goToSeekOrRewind(); continue; } return; }
+        onCCRef.current(null);
+        await sleepMs(200);
+
+        // ── 3. ISOLATED REPLAY ×2 (always — count 1 reverses to its own start) ──
+        if (!aborted()) {
+          // For count 1: reverse to beats[0] (same start), play once.
+          // For count 2+: reverse 2 beats back, play from there.
+          const revTarget = beats[Math.max(0, c - 1)].time;
+          const prevCount = i - 1; // 0 for count 1 (no prev beat to narrate)
+          const label = c === 0 ? `→ ${i}` : `${prevCount} → ${i}`;
+
+          for (let rep = 0; rep < 2 && !aborted(); rep++) {
+            await reverseSeekTo(revTarget);
+            if (aborted()) break;
+
+            // Announce BEFORE countdown so the phrase finishes before video plays
+            speak(rep === 0 ? tryingPhrase(i) : 'again', false);
+
+            // Countdown: 2 · 1 · go
+            if (prevCount > 0) onCCRef.current(prevCount);
+            onLCRef.current(label);
+            onCDRef.current('2'); await sleepMs(1000); if (aborted()) break;
+            onCDRef.current('1'); await sleepMs(1000); if (aborted()) break;
+            onCDRef.current('go'); await sleepMs(200); if (aborted()) break;
+            onCDRef.current(null); onLCRef.current(null); onCCRef.current(null);
+
+            // Forward play: narrator fires at beats[c-1] (if exists) and beats[c]
+            v.playbackRate = 0.25;
+            await v.play().catch(() => {});
+            let saidPrev = false, saidCurr = false;
+            await new Promise<void>(resolve => {
+              const tick = () => {
+                if (aborted()) { resolve(); return; }
+                const t = v.currentTime;
+                if (!saidPrev && prevCount > 0 && t >= beats[c - 1].time - 0.12) {
+                  saidPrev = true; speak(COUNT_SPOKEN[prevCount], false); onCCRef.current(prevCount);
+                }
+                if (!saidCurr && t >= beats[c].time - 0.12) {
+                  saidCurr = true; speak(COUNT_SPOKEN[i], false); onCCRef.current(i);
+                }
+                if (t >= countEnd - 0.04) { resolve(); return; }
+                requestAnimationFrame(tick);
+              };
+              requestAnimationFrame(tick);
+            });
+            v.pause(); onCCRef.current(null);
+            await sleepMs(300);
+          }
+          onCDRef.current(null); onLCRef.current(null); onCCRef.current(null);
+        }
+
+        if (rewindTrig.current) { goToSeekOrRewind(); continue; }
+        if (cancel.cancelled) return;
+
+        // ── 4. TELEPORT to beat[0] ───────────────────────────────────────────
+        v.pause(); v.currentTime = beats[0].time;
+        await sleepMs(100);
+        c++;
       }
 
-      if (!cancelled) {
-        setCurrentCount(null); setCurrentCue('');
-        // Auto-loop: back to watching phase
-        loopRef.current += 1;
-        setPhase('watching');
-      }
+      if (!cancel.cancelled) setPhase('clean_pass');
     })();
 
-    return () => { cancelled = true; if (videoRef.current) videoRef.current.pause(); window.speechSynthesis?.cancel(); };
+    return () => {
+      cancel.cancelled = true;
+      stopScheduled();
+      v.pause();
+      window.speechSynthesis?.cancel();
+      onCCRef.current(null); onLCRef.current(null); onCDRef.current(null);
+    };
   }, [phase]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // "Skip to practice" button always available
+  // ── Clean pass: 2 full runs, count display only, no narration ──────────────
+  useEffect(() => {
+    if (phase !== 'clean_pass') return;
+    const v = videoRef.current;
+    const plan = planRef.current;
+    if (!v || !plan) return;
+    const cancel = { cancelled: false };
+
+    (async () => {
+      for (let pass = 0; pass < 2 && !cancel.cancelled; pass++) {
+        await seekVideo(v, plan.beats[0].time);
+        if (cancel.cancelled) return;
+        v.playbackRate = 0.5;
+        await v.play().catch(() => {});
+
+        const fired = new Set<number>();
+        const chunkEnd = chapter.endTimeMs > 0 ? chapter.endTimeMs / 1000 : (v.duration ?? 999);
+
+        await new Promise<void>(resolve => {
+          const tick = () => {
+            if (cancel.cancelled) { resolve(); return; }
+            const t = v.currentTime;
+            for (const beat of plan.beats) {
+              if (!fired.has(beat.count) && t >= beat.time - 0.15) {
+                fired.add(beat.count);
+                onCCRef.current(beat.count);
+                setTimeout(() => onCCRef.current(null), 380);
+              }
+            }
+            if (t >= chunkEnd - 0.1) { resolve(); return; }
+            requestAnimationFrame(tick);
+          };
+          requestAnimationFrame(tick);
+        });
+      }
+      if (!cancel.cancelled) setPhase('done');
+    })();
+
+    return () => { cancel.cancelled = true; v.pause(); onCCRef.current(null); };
+  }, [phase]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (phase !== 'done') return;
+    onCCRef.current(null);
+    onEndRef.current();
+  }, [phase]);
+
   const skipBtn = (
     <div className="absolute bottom-4 right-4 z-30 pointer-events-auto">
       <button
-        onClick={() => { window.speechSynthesis?.cancel(); onEndRef.current(); }}
+        onClick={() => {
+          for (const s of scheduledRef.current) { try { s.stop(); } catch {} }
+          onEndRef.current();
+        }}
         className="text-white/30 text-[11px] hover:text-white/60 transition-colors bg-black/40 px-3 py-1.5 rounded-lg"
       >
         Skip to practice →
@@ -476,56 +1057,47 @@ function TeachContent({ chapter, videoRef, videoSrc, effectiveCounts, chunkDesc,
     </div>
   );
 
-  if (phase === 'fetching') {
+  // Pause / rewind control bar — shown during building + clean_pass
+  const controlBar = phase !== 'computing' && phase !== 'done' ? (
+    <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-30 flex items-center gap-2 pointer-events-auto">
+      <button
+        onClick={() => {
+          if (pauseState.current.paused) {
+            controlRef.current?.resume?.();
+          } else {
+            controlRef.current?.pause?.();
+          }
+        }}
+        title={pauseState.current.paused ? 'Resume' : 'Pause'}
+        className="w-9 h-9 rounded-full bg-black/60 border border-white/20 flex items-center justify-center text-white/75 hover:bg-black/80 hover:text-white transition-all"
+      >
+        {localPaused ? <Play className="w-4 h-4 fill-current" /> : <Pause className="w-4 h-4" />}
+      </button>
+      <button
+        onClick={() => controlRef.current?.rewind?.()}
+        title="Rewind to previous count"
+        className="w-9 h-9 rounded-full bg-black/60 border border-white/20 flex items-center justify-center text-white/75 hover:bg-black/80 hover:text-white transition-all"
+      >
+        <SkipBack className="w-4 h-4" />
+      </button>
+    </div>
+  ) : null;
+
+  if (phase === 'computing') {
     return (
       <div className="absolute inset-0 z-20 flex items-center justify-center pointer-events-none">
         <div className="bg-black/75 backdrop-blur px-5 py-3 rounded-2xl flex items-center gap-2">
           <Loader2 className="w-4 h-4 animate-spin text-violet-400" />
           <span className="text-white/50 text-sm">Preparing your lesson…</span>
         </div>
-      </div>
-    );
-  }
-
-  if (phase === 'watching') {
-    return (
-      <>
-        <div className="absolute inset-0 z-20 pointer-events-none">
-          <div className="absolute top-4 left-4 bg-black/65 backdrop-blur px-4 py-2 rounded-xl">
-            <p className="text-white/75 text-sm font-semibold">👀 Watch the full move</p>
-            <p className="text-white/30 text-[10px]">Count-by-count teaching follows</p>
-          </div>
+        <div className="absolute bottom-4 right-4 pointer-events-auto">
+          {skipBtn}
         </div>
-        {skipBtn}
-      </>
+      </div>
     );
   }
 
-  // teaching phase
-  return (
-    <>
-      <div className="absolute inset-0 z-20 pointer-events-none flex flex-col items-center justify-end pb-24">
-        {currentCount !== null ? (
-          <div className="bg-black/90 backdrop-blur-md px-10 py-6 rounded-3xl text-center min-w-[220px]">
-            <p className="text-white/25 text-[9px] uppercase tracking-widest mb-1">Count</p>
-            <p className="text-white font-black tabular-nums leading-none" style={{ fontSize: '7rem' }}>
-              {currentCount}
-            </p>
-            {currentCue && (
-              <p className="text-violet-300 font-bold text-base mt-3 leading-snug max-w-[240px]">
-                {currentCue}
-              </p>
-            )}
-          </div>
-        ) : (
-          <div className="bg-black/55 backdrop-blur px-4 py-2 rounded-xl">
-            <p className="text-white/25 text-xs">Getting to next count…</p>
-          </div>
-        )}
-      </div>
-      {skipBtn}
-    </>
-  );
+  return <>{controlBar}{skipBtn}</>;
 }
 
 // ── Lead-in beeps (5-6-7-8) ───────────────────────────────────────────────────
@@ -694,7 +1266,7 @@ function ChapterSidebar({ chapters, currentIdx, onSelect, routine }: {
   const fmtMs = (ms: number) => { const s = Math.round(ms / 1000); return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${s % 60 > 0 ? `${s % 60}s` : ''}`.trim(); };
 
   return (
-    <div className="h-full flex flex-col bg-[#0a0a0f] border-l border-white/6 overflow-hidden">
+    <div className="h-full min-h-0 flex flex-col bg-[#0a0a0f] border-l border-white/6 overflow-hidden">
       <div className="px-4 py-3 border-b border-white/6 shrink-0">
         <p className="text-white/30 text-[10px] uppercase tracking-widest">Chapters · {chapters.length}</p>
         <p className="text-white/60 text-xs mt-0.5 font-medium truncate">{routine.title}</p>
@@ -720,6 +1292,42 @@ function ChapterSidebar({ chapters, currentIdx, onSelect, routine }: {
           );
         })}
       </div>
+    </div>
+  );
+}
+
+// ── TeachProgressBar ──────────────────────────────────────────────────────────
+// Full teach-session scrubber: 8 segments (one per count). Click any to jump there.
+
+function TeachProgressBar({ currentStep, totalSteps, onSeek }: {
+  currentStep: number; // 1-based, 0 = not started
+  totalSteps: number;
+  onSeek: (count: number) => void;
+}) {
+  return (
+    <div className="absolute bottom-0 left-0 right-0 h-9 z-25 flex items-center px-3 gap-1 bg-gradient-to-t from-black/60 to-transparent select-none">
+      {Array.from({ length: totalSteps }, (_, i) => {
+        const count = i + 1;
+        const isDone = currentStep > count;
+        const isActive = currentStep === count;
+        return (
+          <div
+            key={count}
+            onClick={() => onSeek(count)}
+            title={`Jump to count ${count}`}
+            className="flex-1 group relative h-5 flex items-center cursor-pointer"
+          >
+            <div className={`w-full rounded-full transition-all duration-150 pointer-events-none ${
+              isActive ? 'h-2 bg-violet-400 shadow-[0_0_6px_rgba(139,92,246,0.7)]'
+              : isDone  ? 'h-1.5 bg-violet-600/60'
+              : 'h-1 bg-white/20 group-hover:h-1.5 group-hover:bg-white/40'
+            }`} />
+            <span className={`absolute inset-x-0 -top-4 text-center text-[9px] font-semibold pointer-events-none transition-opacity ${
+              isActive ? 'text-violet-300 opacity-100' : 'opacity-0 group-hover:opacity-60 text-white/60'
+            }`}>{count}</span>
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -823,6 +1431,59 @@ function WarmupChapter({ onDone }: { onDone: () => void }) {
   );
 }
 
+// ── TeachPoseAnimator ─────────────────────────────────────────────────────────
+// Animates pose frames between two beat timestamps, highlighting the cue joint.
+
+function TeachPoseAnimator({ poseSlice, fromTime, toTime, cueJointIdx }: {
+  poseSlice: any[];
+  fromTime: number;
+  toTime: number;
+  cueJointIdx?: number;
+}) {
+  const [frameIdx, setFrameIdx] = useState(0);
+
+  const frames = (() => {
+    const result: any[] = [];
+    for (let i = 0; i < poseSlice.length; i++) {
+      const t: number = poseSlice[i]?.t ?? poseSlice[i]?.time ?? (i / 30);
+      if (t >= fromTime - 0.05 && t <= toTime + 0.05) result.push(poseSlice[i]);
+    }
+    // Fallback: pick 2 boundary frames if range returned nothing
+    if (result.length < 2) {
+      let best0 = 0, best1 = poseSlice.length - 1, d0 = Infinity, d1 = Infinity;
+      for (let i = 0; i < poseSlice.length; i++) {
+        const t: number = poseSlice[i]?.t ?? poseSlice[i]?.time ?? (i / 30);
+        if (Math.abs(t - fromTime) < d0) { d0 = Math.abs(t - fromTime); best0 = i; }
+        if (Math.abs(t - toTime) < d1) { d1 = Math.abs(t - toTime); best1 = i; }
+      }
+      return [poseSlice[best0], poseSlice[best1]].filter(Boolean);
+    }
+    return result;
+  })();
+
+  useEffect(() => {
+    if (frames.length < 2) return;
+    const id = setInterval(() => setFrameIdx(i => (i + 1) % frames.length), 220);
+    return () => clearInterval(id);
+  }, [frames.length]);
+
+  const frame = frames[Math.min(frameIdx, frames.length - 1)];
+  const landmarks = frame?.landmarks ?? (Array.isArray(frame) ? frame : null);
+  if (!landmarks) return null;
+
+  return (
+    <StickmanCanvas
+      landmarks={landmarks}
+      mode="full_body"
+      smooth={false}
+      width={300}
+      height={480}
+      color="rgba(255,255,255,0.85)"
+      highlightJoints={cueJointIdx !== undefined ? [cueJointIdx] : undefined}
+    />
+  );
+}
+
 // ── ChapterPlayer ─────────────────────────────────────────────────────────────
 
 export default function ChapterPlayer() {
@@ -844,6 +1505,14 @@ export default function ChapterPlayer() {
 
   const [cameraMode, setCameraMode] = useState<CameraMode>('mirror');
   const [hasWebcam, setHasWebcam] = useState(false);
+  const [teachCount, setTeachCount] = useState<number | null>(null);
+  const [teachLabel, setTeachLabel] = useState<string | null>(null);
+  const [teachCountdown, setTeachCountdown] = useState<string | null>(null);
+  const [teachPaused, setTeachPaused] = useState(false);
+  const [teachStep, setTeachStep] = useState(0);
+  const [teachDescribeActive, setTeachDescribeActive] = useState(false);
+  const teachSeekRef = useRef<((n: number) => void) | null>(null);
+  const teachControlRef = useRef<{ pause: () => void; resume: () => void; rewind: () => void } | null>(null);
 
   const [finalScore, setFinalScore] = useState<FinalScore | null>(null);
   const [worstJoint, setWorstJoint] = useState<JointScore | null>(null);
@@ -1167,6 +1836,20 @@ export default function ChapterPlayer() {
     return () => cancelAnimationFrame(animId);
   }, [isPlaying, cameraMode, isWorkerReady, hasWebcam, processFrame, currentArmScore]);
 
+  // ── Space bar → pause/resume teach ───────────────────────────────────────
+  useEffect(() => {
+    if (!chapter || chapter.type !== 'teach') return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.code !== 'Space') return;
+      if ((e.target as HTMLElement)?.tagName === 'INPUT') return;
+      e.preventDefault();
+      if (teachPaused) teachControlRef.current?.resume();
+      else teachControlRef.current?.pause();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [chapter, teachPaused]);
+
   // ── Cleanup ───────────────────────────────────────────────────────────────
   useEffect(() => {
     return () => {
@@ -1204,13 +1887,42 @@ export default function ChapterPlayer() {
     </div>
   );
 
-  // Chunk description for teach narration
-  const teachChunkDesc = (() => {
-    if (!chapter || chapter.type !== 'teach') return '';
+  // Pose slice for teach narration (cue computation) — IIFE, not a hook
+  const teachPoseSlice = (() => {
+    if (!chapter || chapter.type !== 'teach') return undefined;
     const idx = chapter.chunkIndices[0];
-    if (idx === undefined) return '';
-    return routine.chunks.find(c => c.chunk_index === idx)?.description || chapter.title;
+    if (idx === undefined) return undefined;
+    const chunk = routine?.chunks.find(c => c.chunk_index === idx);
+    if (!chunk?.pose_slice_json) return undefined;
+    try {
+      return typeof chunk.pose_slice_json === 'string'
+        ? JSON.parse(chunk.pose_slice_json)
+        : chunk.pose_slice_json;
+    } catch { return undefined; }
   })();
+
+  // ── Teach stickman derived values — plain IIFEs, no hooks ─────────────────
+  const teachBeats = chapter?.type === 'teach'
+    ? ensure8Counts(effectiveRangeCounts, chapter.startTimeMs, chapter.endTimeMs)
+    : [];
+
+  const teachCues = (() => {
+    if (!teachPoseSlice?.length || !teachBeats.length) return new Map<number, string>();
+    const { cues } = computeJointCues(teachPoseSlice, teachBeats);
+    return cues;
+  })();
+
+  // Frames for animated stickman during describe phase (i-1 → i transition)
+  const teachAnimFromTime = teachCount !== null && teachCount > 1
+    ? (teachBeats[teachCount - 2]?.time ?? teachBeats[0]?.time ?? 0)
+    : (teachBeats[0]?.time ?? 0);
+  const teachAnimToTime = teachCount !== null
+    ? (teachBeats[teachCount - 1]?.time ?? teachBeats[teachBeats.length - 1]?.time ?? 1)
+    : 1;
+
+  const teachCueJointName = teachCount !== null ? (teachCues.get(teachCount) ?? null) : null;
+  const teachCueJointIdx = teachCueJointName !== null ? JOINT_IDX[teachCueJointName] : undefined;
+  const showTeachSplit = teachDescribeActive && !showEoC && !!teachPoseSlice?.length;
 
   return (
     <div className="h-screen bg-black flex flex-col overflow-hidden">
@@ -1254,7 +1966,7 @@ export default function ChapterPlayer() {
             <div className="h-full flex bg-black">
 
               {/* Reference video — full width OR left half (when split) */}
-              <div className={`relative bg-black overflow-hidden ${showSplit ? 'flex-1 border-r border-white/5' : 'flex-1'}`}>
+              <div className={`relative bg-black overflow-hidden flex-1 ${showSplit || showTeachSplit ? 'border-r border-white/5' : ''}`}>
                 <video
                   ref={refVideoRef}
                   className="absolute inset-0 w-full h-full object-contain"
@@ -1283,7 +1995,7 @@ export default function ChapterPlayer() {
                   </div>
                 )}
 
-                {/* Teach overlay: beat-synced narration */}
+                {/* Teach overlay: beat-synced narration (count display is in sidebar) */}
                 {chapter?.type === 'teach' && !showEoC && (
                   <TeachContent
                     key={chapter.id}
@@ -1291,14 +2003,60 @@ export default function ChapterPlayer() {
                     videoRef={refVideoRef}
                     videoSrc={videoSrc}
                     effectiveCounts={effectiveRangeCounts}
-                    chunkDesc={teachChunkDesc}
+                    poseSlice={teachPoseSlice}
                     onEnd={handleChapterEnd}
+                    onCountChange={setTeachCount}
+                    onLabelChange={setTeachLabel}
+                    onCountdownChange={setTeachCountdown}
+                    onPausedChange={setTeachPaused}
+                    onDescribePhase={setTeachDescribeActive}
+                    onTeachStepChange={setTeachStep}
+                    audioCtx={audioCtxRef.current}
+                    seekRef={teachSeekRef}
+                    controlRef={teachControlRef}
+                  />
+                )}
+
+                {/* Teach progress bar — full session scrubber (click any count to jump) */}
+                {chapter?.type === 'teach' && !showEoC && (
+                  <TeachProgressBar
+                    currentStep={teachStep}
+                    totalSteps={8}
+                    onSeek={count => teachSeekRef.current?.(count)}
                   />
                 )}
 
                 {/* Beat count caption — muted beat chapters (not teach, not watch) */}
                 {isPlaying && chapter?.muted && chapter?.type !== 'teach' && chapter?.type !== 'watch' && (
                   <CountCaption videoRef={refVideoRef} rangeCounts={effectiveRangeCounts} bpm={bpm} startTimeMs={chapter.startTimeMs} speakCounts />
+                )}
+
+                {/* Teach overlay — count, transition label, countdown */}
+                {chapter?.type === 'teach' && (teachCount !== null || teachLabel !== null || teachCountdown !== null) && (
+                  <div className="absolute top-3 right-3 z-20 pointer-events-none select-none flex flex-col items-end gap-1">
+                    {teachCount !== null && (
+                      <span className="font-black tabular-nums leading-none"
+                        style={{ fontSize: '3.5rem', color: 'rgba(255,255,255,0.9)', textShadow: '0 2px 12px rgba(0,0,0,0.8)' }}>
+                        {teachCount}
+                      </span>
+                    )}
+                    {teachLabel !== null && (
+                      <span className="font-bold tracking-wide"
+                        style={{ fontSize: '1.05rem', color: 'rgba(139,92,246,0.9)', textShadow: '0 1px 8px rgba(0,0,0,0.9)' }}>
+                        {teachLabel}
+                      </span>
+                    )}
+                    {teachCountdown !== null && (
+                      <span className="font-black tabular-nums leading-none"
+                        style={{
+                          fontSize: teachCountdown === 'go' ? '1.4rem' : '2.8rem',
+                          color: teachCountdown === 'go' ? 'rgba(74,222,128,0.95)' : 'rgba(251,191,36,0.95)',
+                          textShadow: '0 2px 10px rgba(0,0,0,0.9)',
+                        }}>
+                        {teachCountdown}
+                      </span>
+                    )}
+                  </div>
                 )}
 
                 {/* Chapter badge top-left */}
@@ -1320,6 +2078,27 @@ export default function ChapterPlayer() {
 
                 {showSplit && <div className="absolute top-2 right-2 z-10 bg-black/35 text-white/18 text-[10px] px-2 py-0.5 rounded-md pointer-events-none">Reference</div>}
               </div>
+
+              {/* Animated stickman panel — visible during describe phase only */}
+              {showTeachSplit && teachPoseSlice && (
+                <div className="flex-1 relative bg-[#07070d] overflow-hidden flex flex-col items-center justify-center">
+                  <TeachPoseAnimator
+                    poseSlice={teachPoseSlice}
+                    fromTime={teachAnimFromTime}
+                    toTime={teachAnimToTime}
+                    cueJointIdx={teachCueJointIdx}
+                  />
+                  {teachCueJointName && (
+                    <div className="absolute bottom-12 inset-x-0 flex flex-col items-center gap-1 pointer-events-none select-none">
+                      <span className="text-[10px] text-green-400/75 font-semibold tracking-widest uppercase">{teachCueJointName.replace(/_/g, ' ')}</span>
+                      <span className="text-[9px] text-white/20">watch this joint</span>
+                    </div>
+                  )}
+                  <div className="absolute top-2 left-2 text-[9px] text-white/18 pointer-events-none uppercase tracking-widest">
+                    {teachCount !== null && teachCount > 1 ? `${teachCount - 1} → ${teachCount}` : `count ${teachCount ?? ''}`}
+                  </div>
+                </div>
+              )}
 
               {/* Webcam panel — visible when showSplit, always in DOM for ref */}
               <div className={`relative bg-black overflow-hidden ${showSplit ? 'flex-1' : 'hidden'}`}>
