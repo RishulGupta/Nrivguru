@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { ArrowLeft, Play, Zap, Music, Eye, Video } from 'lucide-react';
+import { ArrowLeft, Play, Zap, Music, Eye, Video, BookOpen } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 import { useAuthStore } from '../store/useStore';
 
@@ -288,7 +288,6 @@ function CountMapTimeline({
               🔗 Connect {selectedBlocks.length} phrases back-to-back
             </button>
           )}
-          </div>
         </div>
       ) : (
         <p className="text-white/20 text-xs text-center py-1">
@@ -424,6 +423,15 @@ export default function RoutineDetail() {
 
       {/* Content — ordered to match the 11-step class model */}
       <main className="px-4 pt-6 pb-16 max-w-2xl mx-auto space-y-6">
+
+        {/* Chapter Player — primary CTA for the full desktop session */}
+        <button
+          onClick={() => navigate(`/chapter-player/${routine.id}`)}
+          className="w-full bg-violet-600 hover:bg-violet-500 text-white font-bold py-4 rounded-2xl transition-all shadow-[0_0_22px_rgba(139,92,246,0.35)] flex items-center justify-center gap-2.5 text-base"
+        >
+          <BookOpen className="w-5 h-5" />
+          Start Chapter Player
+        </button>
 
         {/* Step 1 — Warm-up */}
         <div
