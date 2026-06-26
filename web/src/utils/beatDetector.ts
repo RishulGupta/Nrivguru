@@ -12,8 +12,12 @@ export async function detectBeats(
   countGrouping = 8,
   signal?: AbortSignal,
 ): Promise<BeatGrid | null> {
-  if (!SERVICE_URL) return null;
+  if (!SERVICE_URL) {
+    console.warn('[BeatDetector] ❌ VITE_BEAT_SERVICE_URL not set — skipped, beat_grid_json will be null');
+    return null;
+  }
 
+  console.log(`[BeatDetector] 🎵 Calling ${SERVICE_URL}/detect …`);
   const form = new FormData();
   form.append('file', videoFile);
   form.append('api_key', API_KEY);
@@ -22,9 +26,12 @@ export async function detectBeats(
   const res = await fetch(`${SERVICE_URL}/detect`, { method: 'POST', body: form, signal });
   if (!res.ok) {
     const detail = await res.text().catch(() => String(res.status));
+    console.error(`[BeatDetector] ❌ Service returned ${res.status}:`, detail);
     throw new Error(`Beat detection failed (${res.status}): ${detail.slice(0, 200)}`);
   }
-  return res.json() as Promise<BeatGrid>;
+  const grid = await res.json() as BeatGrid;
+  console.log(`[BeatDetector] ✅ BPM: ${grid.bpm}, beats: ${grid.beats.length}, chunks: ${grid.chunks.length}`);
+  return grid;
 }
 
 /** Convert beat-grid chunks to the internal chunk record shape used throughout the pipeline. */

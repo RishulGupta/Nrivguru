@@ -9,7 +9,17 @@ export default function Home() {
   const session = useAuthStore((state) => state.session);
   const credits = useAuthStore((state) => state.credits);
 
+  const setCredits = useAuthStore((state) => state.setCredits);
   const [myRoutines, setMyRoutines] = useState<any[]>([]);
+
+  const addDevCredits = async () => {
+    if (session?.user?.id) {
+      const { data } = await supabase.rpc('rpc_add_credits', { p_user_id: session.user.id, p_amount: 100 });
+      if (data) setCredits(data);
+    } else {
+      setCredits(credits + 100);
+    }
+  };
 
   useEffect(() => {
     async function loadRoutines() {
@@ -41,6 +51,9 @@ export default function Home() {
             <span className="text-yellow-400">⭐</span>
             <span className="text-sm font-semibold text-white">{credits}</span>
           </div>
+          <button onClick={addDevCredits} className="px-3 py-1.5 rounded-full bg-yellow-500/15 border border-yellow-500/30 text-yellow-400 text-xs font-semibold hover:bg-yellow-500/25 transition-all">
+            +100 credits
+          </button>
           <button onClick={() => navigate('/settings')} className="w-10 h-10 rounded-full bg-white/5 flex items-center justify-center text-white hover:bg-white/10 transition-colors text-lg">
             ⚙️
           </button>
