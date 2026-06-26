@@ -220,10 +220,21 @@ const GEMINI_KEY = (import.meta as any).env?.VITE_GEMINI_API_KEY ?? '';
 async function fetchTeachCues(chunkDesc: string, counts: number[]): Promise<Record<number, string>> {
   if (!GEMINI_KEY || counts.length === 0) return {};
   const unique = [...new Set(counts)].slice(0, 8);
-  const prompt = `You are a dance teacher. The dance move is called "${chunkDesc || 'this move'}".
-Write a very short teaching cue (max 5 words) for each count below. Tell students what to do with their body.
-Counts to cover: ${unique.join(', ')}.
-Return ONLY valid JSON with count numbers as string keys: {"1":"step right foot","2":"swing arms up",...}`;
+  const prompt = `You are a professional dance teacher breaking down the move: "${chunkDesc || 'this dance move'}".
+
+For each count number below, write ONE specific body movement instruction (max 8 words).
+Rules:
+- Name the BODY PART first: foot, hip, both arms, shoulder, chest, head, knees, core, etc.
+- Then the ACTION: step, shift, swing, pop, lock, drop, roll, reach, turn, bend, hold, snap
+- Add DIRECTION if helpful: right, left, forward, back, up, down, out, cross
+
+GOOD: "Right foot steps right", "Both hips drop left", "Arms swing forward cross", "Chest pops hold still"
+BAD: "Move right", "Feel it", "Stay rhythmic" (too vague — always name a body part)
+
+Counts: ${unique.join(', ')}
+
+Return ONLY valid JSON with count numbers as STRING keys:
+{"1":"Right foot steps right","2":"Left hip drops","3":"Both arms swing left",...}`;
   try {
     const res = await fetch(
       `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_KEY}`,
@@ -256,8 +267,8 @@ function speakAndWait(text: string, rate = 0.9): Promise<void> {
 }
 
 // ── TeachContent ───────────────────────────────────────────────────────────────
-// Pauses at each beat, narrates a Gemini cue, then resumes.
-// Phase flow: fetching → ready (tap to begin) → teaching
+// Phase machine: fetching → watching (slow play-through) → teaching (beat-by-beat)
+// Auto-loops: teaching end → watching, endlessly until user taps "Skip to practice".
 
 function TeachContent({ chapter, videoRef, videoSrc, effectiveCounts, chunkDesc, bpm, onEnd }: {
   chapter: Chapter;
@@ -268,97 +279,129 @@ function TeachContent({ chapter, videoRef, videoSrc, effectiveCounts, chunkDesc,
   bpm: number;
   onEnd: () => void;
 }) {
-  const [phase, setPhase] = useState<'fetching' | 'ready' | 'teaching'>('fetching');
+  type TeachPhase = 'fetching' | 'watching' | 'teaching';
+  const [phase, setPhase] = useState<TeachPhase>('fetching');
   const [currentCount, setCurrentCount] = useState<number | null>(null);
   const [currentCue, setCurrentCue] = useState('');
-  const cuesRef = useRef<Record<number, string>>({});
-  const activeRef = useRef(true);
+  const cuesRef = useRef<Record<string, string>>({});
+  const loopRef = useRef(0);
+  const onEndRef = useRef(onEnd);
+  useEffect(() => { onEndRef.current = onEnd; }, [onEnd]);
 
-  // Fetch Gemini cues once on mount
+  // Fetch Gemini cues once on mount → auto-start watching
   useEffect(() => {
-    activeRef.current = true;
-    const counts = effectiveCounts?.map(rc => rc.count) ?? [];
+    const counts = [...new Set(
+      effectiveCounts?.map(rc => rc.count) ?? Array.from({ length: 8 }, (_, i) => i + 1)
+    )];
     fetchTeachCues(chunkDesc, counts).then(c => {
-      if (!activeRef.current) return;
       cuesRef.current = c;
-      setPhase('ready');
+      setPhase('watching');
     });
-    return () => { activeRef.current = false; window.speechSynthesis?.cancel(); };
+    return () => { window.speechSynthesis?.cancel(); };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // User taps "Begin Lesson" → unlocks speech synthesis + starts loop
-  const handleTapBegin = useCallback(() => {
-    // Silent utterance to unlock speech synthesis in this gesture stack
-    if (window.speechSynthesis) {
-      const unlock = new SpeechSynthesisUtterance('');
-      window.speechSynthesis.cancel();
-      window.speechSynthesis.speak(unlock);
-    }
-    setPhase('teaching');
-  }, []);
-
-  // Teaching loop — runs when phase becomes 'teaching'
+  // WATCHING: play through slowly so student sees the full move before beat breakdown
   useEffect(() => {
-    if (phase !== 'teaching') return;
+    if (phase !== 'watching') return;
     const v = videoRef.current;
-    if (!v) { onEnd(); return; }
+    if (!v) { setPhase('teaching'); return; }
+    let cancelled = false;
+    setCurrentCount(null); setCurrentCue('');
 
-    let running = true;
-
-    const runLoop = async () => {
-      // Ensure video source is loaded
-      if (videoSrc && v.readyState < 2) {
-        if (!v.src) { v.src = videoSrc; v.load(); }
+    (async () => {
+      // Ensure video ready
+      if (videoSrc && !v.src) { v.src = videoSrc; v.load(); }
+      if (v.readyState < 2) {
         await new Promise<void>(r => {
-          if (v.readyState >= 2) { r(); return; }
-          const h = () => r();
-          v.addEventListener('canplay', h, { once: true });
+          v.addEventListener('canplay', r, { once: true });
           setTimeout(r, 5000);
         });
       }
+      if (cancelled) return;
 
-      // Seek to chapter start
-      await new Promise<void>(resolve => {
-        const target = chapter.startTimeMs / 1000;
-        if (Math.abs(v.currentTime - target) < 0.05) { resolve(); return; }
-        v.addEventListener('seeked', () => resolve(), { once: true });
-        v.currentTime = target;
+      // Seek to start
+      await new Promise<void>(r => {
+        const t = chapter.startTimeMs / 1000;
+        if (Math.abs(v.currentTime - t) < 0.05) { r(); return; }
+        v.addEventListener('seeked', r, { once: true });
+        v.currentTime = t;
+      });
+      if (cancelled) return;
+
+      v.muted = true; v.playbackRate = 0.4;
+      try { await v.play(); } catch {}
+      if (v) v.playbackRate = 0.4;
+
+      // Wait until chunk end
+      const endS = chapter.endTimeMs > 0 ? chapter.endTimeMs / 1000 : (v.duration || 999);
+      await new Promise<void>(r => {
+        const check = () => {
+          if (cancelled || !v || v.ended || v.currentTime >= endS - 0.1) { r(); return; }
+          requestAnimationFrame(check);
+        };
+        requestAnimationFrame(check);
       });
 
-      v.muted = true;
-      v.playbackRate = 0.5;
-      try { await v.play(); } catch {}
-      if (v) v.playbackRate = 0.5;
+      if (!cancelled) setPhase('teaching');
+    })();
 
-      // Priority: effectiveCounts (audio/motion) → synthetic at BPM
+    return () => { cancelled = true; if (videoRef.current) videoRef.current.pause(); };
+  }, [phase, loopRef.current]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // TEACHING: pause at each beat, speak count + cue, resume, auto-loop back to watching
+  useEffect(() => {
+    if (phase !== 'teaching') return;
+    const v = videoRef.current;
+    if (!v) { setPhase('watching'); return; }
+    let cancelled = false;
+
+    (async () => {
+      // Seek to start
+      await new Promise<void>(r => {
+        const t = chapter.startTimeMs / 1000;
+        if (Math.abs(v.currentTime - t) < 0.05) { r(); return; }
+        v.addEventListener('seeked', r, { once: true });
+        v.currentTime = t;
+      });
+      if (cancelled) return;
+
       const beats = effectiveCounts && effectiveCounts.length > 0
         ? effectiveCounts
         : generateSyntheticBeats(chapter.startTimeMs, chapter.endTimeMs, bpm);
 
-      for (let i = 0; i < beats.length && running; i++) {
+      v.muted = true; v.playbackRate = 0.5;
+      try { await v.play(); } catch {}
+      if (v) v.playbackRate = 0.5;
+
+      for (let i = 0; i < beats.length && !cancelled; i++) {
         const beat = beats[i];
 
-        // Wait until video reaches this beat
-        await new Promise<void>(resolve => {
+        // Wait for video currentTime to reach this beat
+        await new Promise<void>(r => {
           const check = () => {
-            if (!running || !v) { resolve(); return; }
-            if (v.ended || v.currentTime >= beat.time - 0.04) { resolve(); return; }
+            if (cancelled || !v || v.ended || v.currentTime >= beat.time - 0.04) { r(); return; }
             requestAnimationFrame(check);
           };
           requestAnimationFrame(check);
         });
-        if (!running || v.ended) break;
+        if (cancelled || v.ended) break;
 
         v.pause();
+        const cue = cuesRef.current[String(beat.count)] ?? cuesRef.current[beat.count] ?? '';
         setCurrentCount(beat.count);
-        const cue = cuesRef.current[beat.count] ?? '';
         setCurrentCue(cue);
 
-        await speakAndWait(cue ? `Count ${beat.count}. ${cue}.` : `Count ${beat.count}.`);
-        if (!running) break;
+        // Speak: just the number first (instant visual+audio sync), then the cue
+        await speakAndWait(String(beat.count), 1.1);
+        if (cancelled) break;
+        if (cue) {
+          await speakAndWait(cue, 0.92);
+          if (cancelled) break;
+        }
 
-        await new Promise(r => setTimeout(r, 300));
-        if (!running) break;
+        // Hold so user can absorb before video resumes
+        await new Promise(r => setTimeout(r, 500));
+        if (cancelled) break;
 
         if (i < beats.length - 1) {
           try { await v.play(); } catch {}
@@ -366,59 +409,78 @@ function TeachContent({ chapter, videoRef, videoSrc, effectiveCounts, chunkDesc,
         }
       }
 
-      if (running) { setCurrentCount(null); onEnd(); }
-    };
+      if (!cancelled) {
+        setCurrentCount(null); setCurrentCue('');
+        // Auto-loop: back to watching phase
+        loopRef.current += 1;
+        setPhase('watching');
+      }
+    })();
 
-    runLoop();
-    return () => { running = false; if (videoRef.current) videoRef.current.pause(); window.speechSynthesis?.cancel(); };
+    return () => { cancelled = true; if (videoRef.current) videoRef.current.pause(); window.speechSynthesis?.cancel(); };
   }, [phase]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // "Skip to practice" button always available
+  const skipBtn = (
+    <div className="absolute bottom-4 right-4 z-30 pointer-events-auto">
+      <button
+        onClick={() => { window.speechSynthesis?.cancel(); onEndRef.current(); }}
+        className="text-white/30 text-[11px] hover:text-white/60 transition-colors bg-black/40 px-3 py-1.5 rounded-lg"
+      >
+        Skip to practice →
+      </button>
+    </div>
+  );
 
   if (phase === 'fetching') {
     return (
       <div className="absolute inset-0 z-20 flex items-center justify-center pointer-events-none">
         <div className="bg-black/75 backdrop-blur px-5 py-3 rounded-2xl flex items-center gap-2">
           <Loader2 className="w-4 h-4 animate-spin text-violet-400" />
-          <span className="text-white/50 text-sm">Preparing lesson…</span>
+          <span className="text-white/50 text-sm">Preparing your lesson…</span>
         </div>
       </div>
     );
   }
 
-  if (phase === 'ready') {
+  if (phase === 'watching') {
     return (
-      <div className="absolute inset-0 z-20 flex items-center justify-center bg-black/72">
-        <div className="text-center space-y-4 px-8">
-          <div className="text-5xl">📖</div>
-          <h3 className="text-white text-xl font-bold">Lesson ready</h3>
-          <p className="text-white/40 text-sm leading-relaxed">
-            I'll pause on each count and narrate the movement.<br />Tap below to start.
-          </p>
-          <button
-            onClick={handleTapBegin}
-            className="mt-2 px-10 py-4 bg-violet-600 hover:bg-violet-500 text-white font-bold rounded-2xl transition-all shadow-[0_0_24px_rgba(139,92,246,0.45)] text-lg"
-          >
-            ▶ Begin Lesson
-          </button>
+      <>
+        <div className="absolute inset-0 z-20 pointer-events-none">
+          <div className="absolute top-4 left-4 bg-black/65 backdrop-blur px-4 py-2 rounded-xl">
+            <p className="text-white/75 text-sm font-semibold">👀 Watch the full move</p>
+            <p className="text-white/30 text-[10px]">Count-by-count teaching follows</p>
+          </div>
         </div>
-      </div>
+        {skipBtn}
+      </>
     );
   }
 
-  // teaching phase — count overlay
+  // teaching phase
   return (
-    <div className="absolute inset-0 z-20 pointer-events-none flex flex-col items-center justify-end pb-28">
-      {currentCount !== null ? (
-        <div className="bg-black/85 backdrop-blur-md px-8 py-5 rounded-2xl text-center space-y-1 animate-in slide-in-from-bottom-3 duration-200">
-          <p className="text-white/35 text-[10px] uppercase tracking-widest">Count</p>
-          <p className="text-white font-black tabular-nums" style={{ fontSize: '5rem', lineHeight: 1 }}>{currentCount}</p>
-          {currentCue && <p className="text-violet-300 text-sm font-semibold mt-1">{currentCue}</p>}
-        </div>
-      ) : (
-        <div className="bg-black/60 backdrop-blur px-5 py-2 rounded-xl">
-          <p className="text-white/30 text-xs">Watch the movement</p>
-        </div>
-      )}
-    </div>
+    <>
+      <div className="absolute inset-0 z-20 pointer-events-none flex flex-col items-center justify-end pb-24">
+        {currentCount !== null ? (
+          <div className="bg-black/90 backdrop-blur-md px-10 py-6 rounded-3xl text-center min-w-[220px]">
+            <p className="text-white/25 text-[9px] uppercase tracking-widest mb-1">Count</p>
+            <p className="text-white font-black tabular-nums leading-none" style={{ fontSize: '7rem' }}>
+              {currentCount}
+            </p>
+            {currentCue && (
+              <p className="text-violet-300 font-bold text-base mt-3 leading-snug max-w-[240px]">
+                {currentCue}
+              </p>
+            )}
+          </div>
+        ) : (
+          <div className="bg-black/55 backdrop-blur px-4 py-2 rounded-xl">
+            <p className="text-white/25 text-xs">Getting to next count…</p>
+          </div>
+        )}
+      </div>
+      {skipBtn}
+    </>
   );
 }
 
@@ -444,11 +506,12 @@ function playLeadIn(ctx: AudioContext, beatMs: number, onCount: (n: number | nul
 
 // ── CountCaption ───────────────────────────────────────────────────────────────
 
-function CountCaption({ videoRef, rangeCounts, bpm, startTimeMs }: {
+function CountCaption({ videoRef, rangeCounts, bpm, startTimeMs, speakCounts = false }: {
   videoRef: React.RefObject<HTMLVideoElement>;
   rangeCounts?: BeatCount[];
   bpm: number;
   startTimeMs: number;
+  speakCounts?: boolean;
 }) {
   const [count, setCount] = useState<number | null>(null);
   const [flash, setFlash] = useState(false);
@@ -471,6 +534,12 @@ function CountCaption({ videoRef, rangeCounts, bpm, startTimeMs }: {
       }
       if (c !== null && c !== lastRef.current) {
         lastRef.current = c; setCount(c); setFlash(true);
+        if (speakCounts && window.speechSynthesis) {
+          window.speechSynthesis.cancel();
+          const u = new SpeechSynthesisUtterance(String(c));
+          u.rate = 1.7; u.volume = 1;
+          window.speechSynthesis.speak(u);
+        }
         if (flashTimer.current) clearTimeout(flashTimer.current);
         flashTimer.current = setTimeout(() => setFlash(false), 110);
       }
@@ -727,6 +796,7 @@ export default function ChapterPlayer() {
   const [isLeadIn, setIsLeadIn] = useState(false);
   const [leadInCount, setLeadInCount] = useState<number | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
+  const [watchCountdown, setWatchCountdown] = useState<number | null>(null);
 
   const [cameraMode, setCameraMode] = useState<CameraMode>('mirror');
   const [hasWebcam, setHasWebcam] = useState(false);
@@ -1002,14 +1072,31 @@ export default function ChapterPlayer() {
     v.muted = false;
     v.playbackRate = 1;
 
-    const play = () => { v.currentTime = 0; v.play().then(() => { v.playbackRate = 1; setIsPlaying(true); }); };
+    let cdCancelled = false;
+    const doPlay = () => {
+      if (cdCancelled) return;
+      v.currentTime = 0;
+      v.play().then(() => { if (v) { v.playbackRate = 1; setIsPlaying(true); } }).catch(() => {});
+    };
+    const runCountdown = () => {
+      setWatchCountdown(3);
+      const t1 = setTimeout(() => { if (!cdCancelled) setWatchCountdown(2); }, 1000);
+      const t2 = setTimeout(() => { if (!cdCancelled) setWatchCountdown(1); }, 2000);
+      const t3 = setTimeout(() => { if (!cdCancelled) { setWatchCountdown(null); doPlay(); } }, 3000);
+      const prevCleanup = videoCleanupRef.current;
+      videoCleanupRef.current = () => {
+        cdCancelled = true; setWatchCountdown(null);
+        clearTimeout(t1); clearTimeout(t2); clearTimeout(t3);
+        prevCleanup?.();
+      };
+    };
 
     if (loadedSrcRef.current !== videoSrc) {
       loadedSrcRef.current = videoSrc;
       v.src = videoSrc; v.load();
-      v.addEventListener('loadedmetadata', play, { once: true });
+      v.addEventListener('loadedmetadata', runCountdown, { once: true });
     } else {
-      play();
+      runCountdown();
     }
   }, [currentIdx, chapters, videoSrc]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -1130,6 +1217,17 @@ export default function ChapterPlayer() {
                   playsInline
                 />
 
+                {/* Watch chapter 3-2-1 countdown overlay */}
+                {chapter?.type === 'watch' && watchCountdown !== null && (
+                  <div className="absolute inset-0 z-30 flex flex-col items-center justify-center bg-black/80 pointer-events-none">
+                    <p className="text-white/35 text-xs uppercase tracking-widest mb-4">Starting in</p>
+                    <span className="font-black tabular-nums leading-none animate-in zoom-in duration-150"
+                      style={{ fontSize: '10rem', color: 'white', textShadow: '0 0 32px rgba(139,92,246,0.6)' }}>
+                      {watchCountdown}
+                    </span>
+                  </div>
+                )}
+
                 {/* Lead-in overlay */}
                 {isLeadIn && (
                   <div className="absolute inset-0 z-20 flex flex-col items-center justify-center bg-black/65 pointer-events-none">
@@ -1157,7 +1255,7 @@ export default function ChapterPlayer() {
 
                 {/* Beat count caption — muted beat chapters (not teach, not watch) */}
                 {isPlaying && chapter?.muted && chapter?.type !== 'teach' && chapter?.type !== 'watch' && (
-                  <CountCaption videoRef={refVideoRef} rangeCounts={effectiveRangeCounts} bpm={bpm} startTimeMs={chapter.startTimeMs} />
+                  <CountCaption videoRef={refVideoRef} rangeCounts={effectiveRangeCounts} bpm={bpm} startTimeMs={chapter.startTimeMs} speakCounts />
                 )}
 
                 {/* Chapter badge top-left */}
