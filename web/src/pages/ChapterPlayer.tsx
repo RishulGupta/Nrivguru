@@ -198,54 +198,103 @@ function extractMotionBeats(frames: any[], startTimeMs: number, endTimeMs: numbe
   }));
 }
 
-function generateSyntheticBeats(startMs: number, endMs: number, bpm: number): BeatCount[] {
-  const safeBpm = bpm > 0 ? bpm : 120;
-  const beatInterval = 60 / safeBpm;
-  const beats: BeatCount[] = [];
-  let t = startMs / 1000;
-  let count = 1;
-  const endS = endMs / 1000;
-  while (t <= endS + beatInterval * 0.5) {
-    beats.push({ count, time: t });
-    t += beatInterval;
-    count = count >= 8 ? 1 : count + 1;
-  }
-  return beats;
-}
 
 // ── Gemini cue generation for teach chapters ───────────────────────────────────
 
 const GEMINI_KEY = (import.meta as any).env?.VITE_GEMINI_API_KEY ?? '';
 
-async function fetchTeachCues(chunkDesc: string, counts: number[]): Promise<Record<number, string>> {
-  if (!GEMINI_KEY || counts.length === 0) return {};
-  const unique = [...new Set(counts)].slice(0, 8);
-  const prompt = `You are a professional dance teacher breaking down the move: "${chunkDesc || 'this dance move'}".
+// Generic fallback cues used when Gemini is rate-limited or unavailable
+const FALLBACK_CUES: Record<number, string> = {
+  1: 'Step right foot to the side',
+  2: 'Shift your weight right',
+  3: 'Both arms swing forward',
+  4: 'Chest pops, hold strong',
+  5: 'Step left foot to the side',
+  6: 'Shift your weight left',
+  7: 'Arms pull back and down',
+  8: 'Hold — reset for next round',
+};
 
-For each count number below, write ONE specific body movement instruction (max 8 words).
-Rules:
-- Name the BODY PART first: foot, hip, both arms, shoulder, chest, head, knees, core, etc.
-- Then the ACTION: step, shift, swing, pop, lock, drop, roll, reach, turn, bend, hold, snap
-- Add DIRECTION if helpful: right, left, forward, back, up, down, out, cross
+// Module-level cache: avoids re-calling Gemini on every loop / Strict Mode double-invoke
+const _cueCache = new Map<string, Record<string, string>>();
+let _pendingFetch: Map<string, Promise<Record<string, string>>> = new Map();
 
-GOOD: "Right foot steps right", "Both hips drop left", "Arms swing forward cross", "Chest pops hold still"
-BAD: "Move right", "Feel it", "Stay rhythmic" (too vague — always name a body part)
+async function fetchTeachCues(chunkDesc: string, counts: number[]): Promise<Record<string, string>> {
+  const unique = [...new Set(counts.length > 0 ? counts : [1,2,3,4,5,6,7,8])].slice(0, 8);
+  const cacheKey = `${chunkDesc}|${unique.join(',')}`;
 
-Counts: ${unique.join(', ')}
+  if (_cueCache.has(cacheKey)) return _cueCache.get(cacheKey)!;
+  if (_pendingFetch.has(cacheKey)) return _pendingFetch.get(cacheKey)!;
 
-Return ONLY valid JSON with count numbers as STRING keys:
-{"1":"Right foot steps right","2":"Left hip drops","3":"Both arms swing left",...}`;
-  try {
-    const res = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_KEY}`,
-      { method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }], generationConfig: { response_mime_type: 'application/json' } }) }
-    );
-    if (!res.ok) return {};
-    const data = await res.json();
-    const text = data.candidates?.[0]?.content?.parts?.[0]?.text ?? '{}';
-    return JSON.parse(text.replace(/```json|```/g, '').trim());
-  } catch { return {}; }
+  if (!GEMINI_KEY) {
+    const fb = Object.fromEntries(unique.map(n => [String(n), FALLBACK_CUES[n] ?? `Count ${n}`]));
+    _cueCache.set(cacheKey, fb);
+    return fb;
+  }
+
+  const promise = (async (): Promise<Record<string, string>> => {
+    const prompt = `You are a professional dance teacher breaking down: "${chunkDesc || 'this move'}".
+
+For EACH count below write ONE crisp movement instruction (5-8 words max).
+Always name the BODY PART first then the ACTION then DIRECTION.
+
+Examples:
+1 → "Right foot steps out to side"
+2 → "Both hips drop and shift left"
+3 → "Arms swing forward and cross"
+4 → "Chest pops forward, hold"
+5 → "Left foot steps back"
+6 → "Weight shifts onto left hip"
+7 → "Both arms pull wide open"
+8 → "Clap hands, prepare to repeat"
+
+Counts to describe: ${unique.join(', ')}
+
+Respond ONLY with JSON, string keys: {"1":"...","2":"...",...}`;
+
+    try {
+      const res = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_KEY}`,
+        { method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }], generationConfig: { response_mime_type: 'application/json' } }) }
+      );
+      if (res.status === 429) throw new Error('rate-limited');
+      if (!res.ok) throw new Error(`status ${res.status}`);
+      const data = await res.json();
+      const text = data.candidates?.[0]?.content?.parts?.[0]?.text ?? '{}';
+      const parsed = JSON.parse(text.replace(/```json|```/g, '').trim());
+      _cueCache.set(cacheKey, parsed);
+      return parsed;
+    } catch {
+      // Graceful fallback — use built-in cues so teaching still works
+      const fb = Object.fromEntries(unique.map(n => [String(n), FALLBACK_CUES[n] ?? `Count ${n}`]));
+      _cueCache.set(cacheKey, fb);
+      return fb;
+    } finally {
+      _pendingFetch.delete(cacheKey);
+    }
+  })();
+
+  _pendingFetch.set(cacheKey, promise);
+  return promise;
+}
+
+// ── Ensure exactly 8 teaching counts across the chunk ─────────────────────────
+// Beat detection may return fewer beats (short chunks, no audio). This always
+// produces exactly 8 evenly-spaced positions so all 8 counts are taught.
+
+function ensure8Counts(effectiveCounts: BeatCount[] | undefined, startMs: number, endMs: number): BeatCount[] {
+  // If we have 8+ good beats, use the first 8
+  if (effectiveCounts && effectiveCounts.length >= 8) return effectiveCounts.slice(0, 8);
+
+  // Otherwise space 8 counts evenly across the chunk.
+  // Minimum interval 0.4s so the teach loop has time to speak between pauses.
+  const durSec = Math.max(0.4 * 8, (endMs - startMs) / 1000);
+  const interval = durSec / 8;
+  return Array.from({ length: 8 }, (_, i) => ({
+    count: i + 1,
+    time: startMs / 1000 + i * interval,
+  }));
 }
 
 // ── speakAndWait — promise-based TTS using Web Speech API ────────────────────
@@ -276,7 +325,6 @@ function TeachContent({ chapter, videoRef, videoSrc, effectiveCounts, chunkDesc,
   videoSrc: string;
   effectiveCounts: BeatCount[] | undefined;
   chunkDesc: string;
-  bpm: number;
   onEnd: () => void;
 }) {
   type TeachPhase = 'fetching' | 'watching' | 'teaching';
@@ -288,12 +336,10 @@ function TeachContent({ chapter, videoRef, videoSrc, effectiveCounts, chunkDesc,
   const onEndRef = useRef(onEnd);
   useEffect(() => { onEndRef.current = onEnd; }, [onEnd]);
 
-  // Fetch Gemini cues once on mount → auto-start watching
+  // Fetch Gemini cues once on mount → auto-start watching.
+  // fetchTeachCues uses a module-level cache so this never double-calls the API.
   useEffect(() => {
-    const counts = [...new Set(
-      effectiveCounts?.map(rc => rc.count) ?? Array.from({ length: 8 }, (_, i) => i + 1)
-    )];
-    fetchTeachCues(chunkDesc, counts).then(c => {
+    fetchTeachCues(chunkDesc, [1,2,3,4,5,6,7,8]).then(c => {
       cuesRef.current = c;
       setPhase('watching');
     });
@@ -365,9 +411,9 @@ function TeachContent({ chapter, videoRef, videoSrc, effectiveCounts, chunkDesc,
       });
       if (cancelled) return;
 
-      const beats = effectiveCounts && effectiveCounts.length > 0
-        ? effectiveCounts
-        : generateSyntheticBeats(chapter.startTimeMs, chapter.endTimeMs, bpm);
+      // Always teach exactly 8 counts — ensure8Counts pads with evenly-spaced
+      // positions if beat detection found fewer than 8 beats in this chunk.
+      const beats = ensure8Counts(effectiveCounts, chapter.startTimeMs, chapter.endTimeMs);
 
       v.muted = true; v.playbackRate = 0.5;
       try { await v.play(); } catch {}
@@ -384,23 +430,21 @@ function TeachContent({ chapter, videoRef, videoSrc, effectiveCounts, chunkDesc,
           };
           requestAnimationFrame(check);
         });
-        if (cancelled || v.ended) break;
+        if (cancelled) break;
 
         v.pause();
-        const cue = cuesRef.current[String(beat.count)] ?? cuesRef.current[beat.count] ?? '';
+        const cue = cuesRef.current[String(beat.count)] ?? FALLBACK_CUES[beat.count] ?? `Count ${beat.count}`;
         setCurrentCount(beat.count);
         setCurrentCue(cue);
 
-        // Speak: just the number first (instant visual+audio sync), then the cue
-        await speakAndWait(String(beat.count), 1.1);
+        // Speak count number sharp and fast, then the movement cue at natural pace
+        await speakAndWait(String(beat.count), 1.2);
         if (cancelled) break;
-        if (cue) {
-          await speakAndWait(cue, 0.92);
-          if (cancelled) break;
-        }
+        await speakAndWait(cue, 0.88);
+        if (cancelled) break;
 
-        // Hold so user can absorb before video resumes
-        await new Promise(r => setTimeout(r, 500));
+        // Hold so user can read + absorb
+        await new Promise(r => setTimeout(r, 700));
         if (cancelled) break;
 
         if (i < beats.length - 1) {
@@ -1248,7 +1292,6 @@ export default function ChapterPlayer() {
                     videoSrc={videoSrc}
                     effectiveCounts={effectiveRangeCounts}
                     chunkDesc={teachChunkDesc}
-                    bpm={bpm}
                     onEnd={handleChapterEnd}
                   />
                 )}
