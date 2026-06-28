@@ -537,7 +537,7 @@ function tryingPhrase(i: number, from: number = 0): string {
 
 function howToGoPhrase(from: number, to: number): string {
   if (from === 0) return `here is count ${COUNT_SPOKEN[to]}`;
-  return `how to go from ${COUNT_SPOKEN[from]} to ${COUNT_SPOKEN[to]}`;
+  return `how to do count ${COUNT_SPOKEN[to]}`;
 }
 
 // Synthesize cue descriptions, fallback descriptions, cumulative + individual count words.
@@ -1192,8 +1192,9 @@ function TeachContent({
         // For count 1, start from the beginning of the video chunk (start to 1).
         if (!aborted()) {
           const isFirstCount = c === 0;
-          const revTarget = isFirstCount ? (chapter.startTimeMs / 1000) : beats[Math.max(0, c - 2)].time;
-          const prevCount = isFirstCount ? 0 : Math.max(1, i - 2);
+          // TRYING: start from count i-1 (not i-2) per user request
+          const revTarget = isFirstCount ? (chapter.startTimeMs / 1000) : beats[Math.max(0, c - 1)].time;
+          const prevCount = isFirstCount ? 0 : i - 1;
 
           // Build human-readable label like "1 → 3" or "start → 1"
           const tryLabel = isFirstCount
@@ -1208,9 +1209,9 @@ function TeachContent({
 
             if (prevCount > 0) onCCRef.current(prevCount);
             const naturalLabel = isFirstCount
-            ? `Trying start to ${COUNT_SPOKEN[i]}`
-            : `Trying ${COUNT_SPOKEN[prevCount]} to ${COUNT_SPOKEN[i]}`;
-          onLCRef.current(rep === 0 ? naturalLabel : `Again `);
+            ? `Trying ${COUNT_SPOKEN[i]}`
+            : `${COUNT_SPOKEN[prevCount]} and ${COUNT_SPOKEN[i]}`;
+          onLCRef.current(rep === 0 ? naturalLabel : `Again`);
             onCDRef.current('2'); await sleepMs(1000); if (aborted()) break;
             onCDRef.current('1'); await sleepMs(1000); if (aborted()) break;
             onCDRef.current('go'); await sleepMs(200); if (aborted()) break;
@@ -1221,10 +1222,8 @@ function TeachContent({
             await v.play().catch(() => {});
             await new Promise<void>(resolve => {
               const said = new Set<number>();
-              // Count indices to speak: from start count up to and including current count
-              const startBeats = isFirstCount ? -1 : (c - 2); // c=0 => -1 (start), c=1 => -1 (start for count 2), c>=2 => c-2
-              // For first count, we still want to say "one" when reaching it
-              const firstBeatToSay = isFirstCount ? 0 : Math.max(0, c - 2);
+              // Count indices to speak: only count i-1 and count i
+              const firstBeatToSay = Math.max(0, c - 1); // c=0 => 0, c=1 => 0, c>=2 => c-1
               for (let beatIdx = firstBeatToSay; beatIdx <= c; beatIdx++) {
                 if (!aborted()) said.add(beatIdx);
               }
