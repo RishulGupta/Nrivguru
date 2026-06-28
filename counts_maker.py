@@ -33,18 +33,20 @@ BPM_RANGE: tuple[int, int] = (60, 180)
 AUDIO_ONSET_HOP: int = 512            # librosa hop_length for onset detection
 
 # Motion
-SMOOTH_WINDOW_SEC: float = 0.15       # Gaussian smooth σ for motion energy curve
-MIN_BEAT_INTERVAL_SEC: float = 0.18   # minimum gap between detected motion beats
+SMOOTH_WINDOW_SEC: float = 0.12       # Gaussian smooth σ for motion energy curve (tighter for dance)
+MIN_BEAT_INTERVAL_SEC: float = 0.20   # minimum gap between detected motion beats
 MOTION_MODE: str = 'energy_peak'      # 'energy_peak' | 'velocity_minima' | 'auto'
-PEAK_DELTA_STD_MULT: float = 0.25     # threshold = mean + MULT × std of energy curve
+PEAK_DELTA_STD_MULT: float = 0.20     # threshold = mean + MULT × std of energy curve (slightly lower)
 
-# Landmark weights — index matches MediaPipe BlazePose full-body landmark index.
-# Increase a joint's weight to make it drive beat detection more strongly.
+# Landmark weights — real dancers count on the "hit" (accent) + "land" (foot-strike).
+# Comprehensive weighting: hips & shoulders drive core, wrists add sharp accents.
 JOINT_WEIGHTS: dict[int, float] = {
-    23: 2.0, 24: 2.0,   # left_hip, right_hip        ← primary motion signal
-    11: 1.5, 12: 1.5,   # left_shoulder, right_shoulder
-    25: 1.0, 26: 1.0,   # left_knee, right_knee
-    15: 0.7, 16: 0.7,   # left_wrist, right_wrist
+    23: 3.0, 24: 3.0,   # left_hip, right_hip              ← primary weight shift
+    11: 2.0, 12: 2.0,   # left_shoulder, right_shoulder   ← upper vody accents
+    13: 1.5, 14: 1.5,   # left_elbow, right_elbow        ← arm extension
+    15: 2.0, 16: 2.0,   # left_wrist, right_wrist        ← fast accent / sharp gestures
+    25: 1.0, 26: 1.0,   # left_knee, right_knee          ← leg lift / step
+    27: 1.0, 28: 1.0,   # left_ankle, right_ankle        ← footwork impact
 }
 
 # Fusion
@@ -122,22 +124,52 @@ def compute_motion_energy(landmarks: np.ndarray, fps: float) -> np.ndarray:
     n_frames, n_lm, n_ch = landmarks.shape
     has_vis = n_ch >= 4
 
-    energy = np.zeros(n_frames, dtype=np.float64)
+    # Build velocity, foot-strike, and arm-snap curves separately
+    velocity = np.zeros(n_frames, dtype=np.float64)
+    foot_strike = np.zeros(n_frames, dtype=np.float64)
+    arm_snap = np.zeros(n_frames, dtype=np.float64)
+
     for i in range(1, n_frames):
         delta = landmarks[i, :, :2] - landmarks[i - 1, :, :2]  # (n_lm, 2)
         vel = np.sqrt((delta ** 2).sum(axis=1))                  # (n_lm,)
-        e = 0.0
+        e_vel, e_foot, e_arm = 0.0, 0.0, 0.0
         for lm_idx, w in JOINT_WEIGHTS.items():
             if lm_idx >= n_lm:
                 continue
             vis = float(landmarks[i, lm_idx, 3]) if has_vis else 1.0
-            e += w * max(0.0, vis) * float(vel[lm_idx])
-        energy[i] = e
+            if vis < 0.25:
+                continue
+            speed = float(vel[lm_idx])
+            e_vel += w * vis * speed
+            # Foot-strike: sharp downward deceleration on ankles (27,28)
+            if lm_idx in (27, 28):
+                dy = float(landmarks[i, lm_idx, 1] - landmarks[i - 1, lm_idx, 1])
+                if dy > 0 and speed > 0.008:
+                    e_foot += w * vis * dy
+            # Arm snap: fast wrist movements (15,16)
+            if lm_idx in (15, 16):
+                e_arm += w * vis * speed
+        velocity[i] = e_vel
+        foot_strike[i] = e_foot
+        arm_snap[i] = e_arm
 
-    # Gaussian smooth
+    # Compute acceleration (change in velocity)
+    acceleration = np.zeros(n_frames, dtype=np.float64)
+    for i in range(2, n_frames):
+        acceleration[i] = abs(velocity[i] - velocity[i - 1])
+
+    # Multi-signal energy: weight the components like a real dancer would
+    # "hit" = velocity majority, "land" = foot-strike, "accent" = arm-snap + acceleration
+    energy = velocity * 0.45 + acceleration * 0.25 + foot_strike * 0.20 + arm_snap * 0.10
+
+    # Adaptive Gaussian smooth — tighter for fast movement, wider for slow
+    avg_vel = float(np.mean(velocity[velocity > 0]) if np.any(velocity > 0) else 0.001)
+    std_vel = float(np.std(velocity))
+    motion_intensity = (std_vel / avg_vel) if avg_vel > 0 else 1.0
+    sigma = max(1.5, min(5.0, 7.0 - motion_intensity * 4.0))
     win = max(1, int(SMOOTH_WINDOW_SEC * fps))
-    kernel_x = np.linspace(-2.5, 2.5, 2 * win + 1)
-    kernel = np.exp(-0.5 * kernel_x ** 2)
+    kernel_x = np.linspace(-3.0, 3.0, 2 * win + 1)
+    kernel = np.exp(-0.5 * (kernel_x / (sigma / 2)) ** 2)
     kernel /= kernel.sum()
     return np.convolve(energy, kernel, mode='same')
 
@@ -453,8 +485,8 @@ def main() -> None:
                         help='Motion beat detection strategy (default: %(default)s)')
     args = parser.parse_args()
 
-    global MOTION_MODE
-    MOTION_MODE = args.mode
+    # Override module-level MOTION_MODE directly in this module's globals.
+    globals()['MOTION_MODE'] = args.mode
 
     landmarks: Optional[np.ndarray] = None
     fps = args.fps

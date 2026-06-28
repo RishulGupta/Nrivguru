@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { ArrowLeft, Camera, CameraOff, Cpu, Play, Pause, SkipBack, Loader2 } from 'lucide-react';
+import { ArrowLeft, Camera, CameraOff, Cpu, Play, Pause, SkipBack, Loader2, Menu, X } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 import { useAuthStore } from '../store/useStore';
 import { getOriginalVideoUrl } from '../utils/videoStore';
@@ -120,80 +120,160 @@ function generateChapters(chunks: DbChunk[], durationMs: number): Chapter[] {
   return chapters;
 }
 
-// ── Motion beat extraction ────────────────────────────────────────────────────
+// ── Motion beat extraction (improved) ─────────────────────────────────────────
 
 function extractMotionBeats(frames: any[], startTimeMs: number, endTimeMs: number): BeatCount[] {
-  if (!Array.isArray(frames) || frames.length < 8) return [];
+  if (!Array.isArray(frames) || frames.length < 2) return [];
   const durationSec = (endTimeMs - startTimeMs) / 1000;
   if (durationSec <= 0) return [];
   const fps = frames.length / durationSec;
 
-  const getLM = (frame: any, idx: number): { x: number; y: number; vis: number } | null => {
+  const getLM = (frame: any, idx: number): { x: number; y: number; z: number; vis: number } | null => {
     if (!frame) return null;
     const lms: any[] = Array.isArray(frame)
       ? frame
       : (frame.landmarks ?? frame.pose_landmarks ?? frame.world_landmarks ?? null);
     if (!Array.isArray(lms) || !lms[idx]) return null;
     const lm = lms[idx];
-    if (Array.isArray(lm)) return { x: lm[0] ?? 0, y: lm[1] ?? 0, vis: lm[3] ?? 1 };
-    return { x: lm.x ?? 0, y: lm.y ?? 0, vis: lm.visibility ?? lm.score ?? 1 };
+    if (Array.isArray(lm)) return { x: lm[0] ?? 0, y: lm[1] ?? 0, z: lm[2] ?? 0, vis: (lm[3] ?? 1) };
+    return { x: lm.x ?? 0, y: lm.y ?? 0, z: lm.z ?? 0, vis: lm.visibility ?? lm.score ?? 1 };
   };
 
-  // Hips (23,24) weight 2, shoulders (11,12) weight 1.5, knees (25,26) weight 1
-  const JOINTS: [number, number][] = [[23, 2], [24, 2], [11, 1.5], [12, 1.5], [25, 1], [26, 1]];
+  // Comprehensive joint weighting — matched to real dancer beat calling
+  // Hips & shoulders drive the core beat, wrists add rhythm detail, knees & ankles add ground impact
+  const JOINTS: [number, number][] = [
+    [23, 3.0], [24, 3.0],       // hips — core weight shift
+    [11, 2.0], [12, 2.0],       // shoulders — upper body accents
+    [13, 1.5], [14, 1.5],       // elbows — arm extension
+    [15, 2.0], [16, 2.0],       // wrists — fast accent, sharp gestures
+    [25, 1.0], [26, 1.0],       // knees — leg lift / step
+    [27, 1.0], [28, 1.0],       // ankles — footwork
+  ];
 
-  const energy = new Float32Array(frames.length);
-  for (let i = 1; i < frames.length; i++) {
-    let e = 0;
+  // Build velocity, acceleration and "foot-strike" (sharp deceleration) curves
+  const n = frames.length;
+  const velocity = new Float32Array(n);
+  const acceleration = new Float32Array(n);
+  const footStrike = new Float32Array(n);
+  const armSnap = new Float32Array(n);
+
+  for (let i = 1; i < n; i++) {
+    let vel = 0, foot = 0, arm = 0;
     for (const [idx, w] of JOINTS) {
       const prev = getLM(frames[i - 1], idx);
       const curr = getLM(frames[i], idx);
       if (!prev || !curr || curr.vis < 0.25) continue;
       const dx = curr.x - prev.x;
       const dy = curr.y - prev.y;
-      e += w * curr.vis * Math.sqrt(dx * dx + dy * dy);
+      const speed = Math.sqrt(dx * dx + dy * dy);
+      vel += w * curr.vis * speed;
+      // Foot-strike: sharp downward deceleration on ankles (27,28) = large impact
+      if (idx === 27 || idx === 28) {
+        const dz = (curr.y - prev.y); // positive = moving down (y increases downward in normalized coords)
+        if (dz > 0 && speed > 0.008) foot += w * curr.vis * dz;
+      }
+      // Arm snap: fast wrist movements (15,16)
+      if (idx === 15 || idx === 16) {
+        arm += w * curr.vis * speed;
+      }
     }
-    energy[i] = e;
+    velocity[i] = vel;
+    footStrike[i] = foot;
+    armSnap[i] = arm;
   }
 
-  // Gaussian smooth (~fps/4 window)
-  const win = Math.max(2, Math.round(fps / 4));
-  const smoothed = new Float32Array(frames.length);
-  for (let i = 0; i < energy.length; i++) {
+  // Compute acceleration (change in velocity)
+  for (let i = 2; i < n; i++) {
+    acceleration[i] = Math.abs(velocity[i] - velocity[i - 1]);
+  }
+
+  // Multi-signal energy: velocity + acceleration + foot-strike + arm-snap
+  // Dancers count on the "hit" (velocity peak + arm snap) and the "land" (foot-strike)
+  const energy = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    energy[i] = velocity[i] * 0.45 + acceleration[i] * 0.25 + footStrike[i] * 0.2 + armSnap[i] * 0.1;
+  }
+
+  // Adaptive Gaussian smooth — tighter for fast movement, wider for slow
+  const avgVel = velocity.reduce((a, b) => a + b, 0) / velocity.length;
+  const stdVel = Math.sqrt(velocity.reduce((s, v) => s + (v - avgVel) ** 2, 0) / velocity.length);
+  const motionIntensity = avgVel > 0 ? stdVel / avgVel : 1;
+  const sigma = Math.max(1.5, Math.min(4, 5 - motionIntensity * 3)); // ~1.5 to 4 frames
+  const win = Math.max(2, Math.round(sigma * 3));
+  const smoothed = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
     let sum = 0, wsum = 0;
-    for (let j = Math.max(0, i - win); j <= Math.min(energy.length - 1, i + win); j++) {
-      const gw = Math.exp(-0.5 * ((j - i) / (win * 0.5)) ** 2);
+    for (let j = Math.max(0, i - win); j <= Math.min(n - 1, i + win); j++) {
+      const gw = Math.exp(-0.5 * ((j - i) / sigma) ** 2);
       sum += energy[j] * gw; wsum += gw;
     }
     smoothed[i] = wsum > 0 ? sum / wsum : 0;
   }
 
-  // Dynamic threshold: mean + 0.3σ
-  const mean = smoothed.reduce((a, b) => a + b, 0) / smoothed.length;
-  let variance = 0;
-  for (let i = 0; i < smoothed.length; i++) variance += (smoothed[i] - mean) ** 2;
-  const std = Math.sqrt(variance / smoothed.length);
-  const threshold = mean + 0.3 * std;
+  // Dynamic threshold: use percentile-based threshold for better handling of quiet sections
+  const sorted = [...smoothed].sort((a, b) => a - b);
+  const p75 = sorted[Math.floor(sorted.length * 0.75)] ?? 0;
+  const p25 = sorted[Math.floor(sorted.length * 0.25)] ?? 0;
+  const iqr = p75 - p25;
+  const threshold = Math.max(p25 + 0.1 * iqr, p25 * 1.5);
 
-  // Peak pick: min gap = 150ms
-  const minDist = Math.max(3, Math.round(fps * 0.15));
-  const peaks: number[] = [];
+  // Peak pick with tempo regularization — real dancers count on a regular beat grid
+  // Estimate the dominant inter-beat interval from auto-correlation
+  let estimatedInterval = Math.max(6, Math.round(fps * 0.4)); // default ~400ms
+  try {
+    // Simple autocorrelation to find periodicity
+    const maxLag = Math.min(n / 2, Math.round(fps * 3));
+    let bestLag = estimatedInterval;
+    let bestCorr = 0;
+    for (let lag = Math.round(fps * 0.3); lag < maxLag; lag++) {
+      let corr = 0;
+      for (let i = lag; i < n; i++) corr += smoothed[i] * smoothed[i - lag];
+      if (corr > bestCorr) { bestCorr = corr; bestLag = lag; }
+    }
+    estimatedInterval = bestLag;
+  } catch {}
+
+  // Candidate peaks with tempo snap — allow slight deviation but prefer regular spacing
+  const minDist = Math.max(3, Math.round(estimatedInterval * 0.7));
+  const maxDist = Math.round(estimatedInterval * 1.4);
+  const candidates: number[] = [];
   let lastPeak = -minDist;
 
-  for (let i = 1; i < smoothed.length - 1; i++) {
+  for (let i = 1; i < n - 1; i++) {
     if (smoothed[i] < threshold) continue;
     if (smoothed[i] <= smoothed[i - 1] || smoothed[i] < smoothed[i + 1]) continue;
     if (i - lastPeak < minDist) {
-      if (peaks.length && smoothed[i] > smoothed[peaks[peaks.length - 1]]) {
-        peaks[peaks.length - 1] = i; lastPeak = i;
+      if (candidates.length && smoothed[i] > smoothed[candidates[candidates.length - 1]]) {
+        candidates[candidates.length - 1] = i; lastPeak = i;
       }
       continue;
     }
-    peaks.push(i); lastPeak = i;
+    candidates.push(i); lastPeak = i;
   }
 
-  return peaks.map((fi, i) => ({
-    count: (i % 8) + 1,
+  // Tempo regularization: snap candidate peaks onto a grid based on the estimated interval
+  const snapStrength = 0.3; // 0 = no snap, 1 = full grid
+  const snapped: number[] = [];
+  if (candidates.length >= 2) {
+    for (let ci = 0; ci < candidates.length; ci++) {
+      let bestT = candidates[ci];
+      // Search nearby for the actual max near the snapped position
+      const searchWindow = Math.max(2, Math.round(sigma));
+      let windowMax = smoothed[bestT], windowIdx = bestT;
+      for (let j = -searchWindow; j <= searchWindow; j++) {
+        const idx = candidates[ci] + j;
+        if (idx >= 0 && idx < n && smoothed[idx] > windowMax) {
+          windowMax = smoothed[idx]; windowIdx = idx;
+        }
+      }
+      snapped.push(windowIdx);
+    }
+  } else {
+    snapped.push(...candidates);
+  }
+
+  return snapped.map((fi, i) => ({
+    count: ((i % 8) + 1),
     time: startTimeMs / 1000 + fi / fps,
   }));
 }
@@ -377,11 +457,14 @@ function generateBuildSteps(
 
 const _ttsCache = new Map<string, AudioBuffer>();
 
-async function synthesizeTTS(text: string, ctx: AudioContext): Promise<AudioBuffer | null> {
+async function synthesizeTTS(text: string, ctx: AudioContext, _retry = false): Promise<AudioBuffer | null> {
   const k = text.trim();
   if (_ttsCache.has(k)) return _ttsCache.get(k)!;
   const apiKey = import.meta.env.VITE_GEMINI_API_KEY ?? '';
-  if (!apiKey) return null;
+  if (!apiKey) {
+    console.warn('[synthesizeTTS] VITE_GEMINI_API_KEY not set — Gemini TTS disabled, using Web Speech fallback');
+    return null;
+  }
   try {
     const res = await fetch(
       `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-tts:generateContent?key=${apiKey}`,
@@ -397,35 +480,64 @@ async function synthesizeTTS(text: string, ctx: AudioContext): Promise<AudioBuff
         }),
       },
     );
-    if (!res.ok) return null;
+    if (!res.ok) {
+      if (res.status === 429 && !_retry) {
+        console.warn('[synthesizeTTS] Rate limited (429), retrying in 3s…');
+        await new Promise<void>(r => setTimeout(r, 3000));
+        return synthesizeTTS(text, ctx, true);
+      }
+      const err = await res.text().catch(() => res.status.toString());
+      console.error('[synthesizeTTS] Gemini API error:', res.status, err.slice(0, 200));
+      return null;
+    }
     const data = await res.json();
     const part = data?.candidates?.[0]?.content?.parts?.[0]?.inlineData;
-    if (!part?.data) return null;
+    if (!part?.data) { console.warn('[synthesizeTTS] no inlineData in response', JSON.stringify(data).slice(0, 300)); return null; }
     const mimeType: string = part.mimeType ?? 'audio/pcm;rate=24000';
+    console.log('[synthesizeTTS] mimeType:', mimeType);
     const raw = atob(part.data);
     const bytes = new Uint8Array(raw.length);
     for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
-    let buf: AudioBuffer;
-    if (mimeType.startsWith('audio/pcm')) {
-      const rate = parseInt(mimeType.match(/rate=(\d+)/)?.[1] ?? '24000');
-      const pcm16 = new Int16Array(bytes.buffer);
-      buf = ctx.createBuffer(1, pcm16.length, rate);
-      const ch = buf.getChannelData(0);
+    const decodePCM = (b: Uint8Array, rate: number): AudioBuffer => {
+      const pcm16 = new Int16Array(b.buffer);
+      const ab = ctx.createBuffer(1, pcm16.length, rate);
+      const ch = ab.getChannelData(0);
       for (let i = 0; i < pcm16.length; i++) ch[i] = pcm16[i] / 32768;
+      return ab;
+    };
+    let buf: AudioBuffer;
+    const lmt = mimeType.toLowerCase();
+    if (lmt.startsWith('audio/pcm') || lmt.startsWith('audio/l16') || lmt.startsWith('audio/raw')) {
+      const rate = parseInt(mimeType.match(/rate=(\d+)/i)?.[1] ?? '24000');
+      buf = decodePCM(bytes, rate);
     } else {
-      buf = await ctx.decodeAudioData(bytes.buffer.slice(0));
+      try {
+        buf = await ctx.decodeAudioData(bytes.buffer.slice(0));
+      } catch {
+        // Gemini often returns raw PCM16 even with a non-pcm mime type — try it
+        console.warn('[synthesizeTTS] decodeAudioData failed for mimeType:', mimeType, '— falling back to PCM16@24kHz');
+        buf = decodePCM(bytes, 24000);
+      }
     }
     _ttsCache.set(k, buf);
     return buf;
-  } catch { return null; }
+  } catch (e) { console.error('[synthesizeTTS] fetch error:', e); return null; }
 }
 
 
 const COUNT_SPOKEN = ['', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight'];
 
-// "trying one" / "trying two to three" — spoken right before each forward isolated play
-function tryingPhrase(i: number): string {
-  return i === 1 ? 'trying one' : `trying ${COUNT_SPOKEN[i - 1]} to ${COUNT_SPOKEN[i]}`;
+// "trying one" / "trying two to four" — spoken right before each forward isolated play.
+// Count 1: always "trying one". Count 2+: uses the previous count from `from`. 
+function tryingPhrase(i: number, from: number = 0): string {
+  if (i === 1) return 'trying one';
+  if (from > 0) return `trying ${COUNT_SPOKEN[from]} to ${COUNT_SPOKEN[i]}`;
+  return `trying ${COUNT_SPOKEN[i]}`;
+}
+
+function howToGoPhrase(from: number, to: number): string {
+  if (from === 0) return `here is count ${COUNT_SPOKEN[to]}`;
+  return `how to go from ${COUNT_SPOKEN[from]} to ${COUNT_SPOKEN[to]}`;
 }
 
 // Synthesize cue descriptions, fallback descriptions, cumulative + individual count words.
@@ -433,9 +545,12 @@ async function presynthTeach(plan: TeachPlan, ctx: AudioContext): Promise<Map<st
   const texts = new Set<string>();
   // Rich teacher description per count (already built in buildTeachPlan)
   plan.descriptions.forEach(phrase => texts.add(phrase));
-  // "trying X to Y" phrases + "again" for isolated replay narration
   texts.add('again');
-  for (let i = 1; i <= plan.beats.length; i++) texts.add(tryingPhrase(i));
+  texts.add('check your posture');
+  for (let i = 1; i <= plan.beats.length; i++) {
+    texts.add(tryingPhrase(i));
+    texts.add(howToGoPhrase(i - 1, i));
+  }
   // Cumulative count phrases: "one", "one, two", …
   for (let c = 1; c <= plan.beats.length; c++) {
     texts.add(COUNT_SPOKEN.slice(1, c + 1).join(', '));
@@ -446,12 +561,14 @@ async function presynthTeach(plan: TeachPlan, ctx: AudioContext): Promise<Map<st
   }
   // "from start till X" — spoken while paused at beat[0] before each cumulative run
   for (let i = 2; i <= plan.beats.length; i++) texts.add(`from start till ${COUNT_SPOKEN[i]}`);
-  const entries = await Promise.allSettled(
-    [...texts].map(async t => [t, await synthesizeTTS(t, ctx)] as [string, AudioBuffer | null]),
-  );
+  // Sequential synthesis at ~6 s/request to stay within 10 RPM quota
   const map = new Map<string, AudioBuffer>();
-  for (const e of entries) {
-    if (e.status === 'fulfilled' && e.value[1]) map.set(e.value[0], e.value[1]);
+  const textArr = [...texts];
+  for (let idx = 0; idx < textArr.length; idx++) {
+    const t = textArr[idx];
+    const buf = await synthesizeTTS(t, ctx);
+    if (buf) map.set(t, buf);
+    if (idx < textArr.length - 1) await new Promise<void>(r => setTimeout(r, 6500));
   }
   return map;
 }
@@ -504,7 +621,7 @@ async function buildTeachPlan(
   if (_teachPlanPending.has(chunkId)) return _teachPlanPending.get(chunkId)!;
 
   const promise = (async (): Promise<TeachPlan> => {
-    const beats = ensure8Counts(effectiveCounts, startMs, endMs);
+    const beats = ensureCounts(effectiveCounts, startMs, endMs);
     const { cues, pausePointCounts } = computeJointCues(poseSlice ?? [], beats);
     const { steps, connectors } = generateBuildSteps(beats, pausePointCounts, cues);
     const pausePoints: PausePoint[] = steps.filter(s => s.pausePoint).map(s => s.pausePoint!);
@@ -520,19 +637,42 @@ async function buildTeachPlan(
   return promise;
 }
 
-// ── Ensure exactly 8 teaching counts across the chunk ─────────────────────────
-// Beat detection may return fewer beats (short chunks, no audio). This always
-// produces exactly 8 evenly-spaced positions so all 8 counts are taught.
+// ── Ensure teaching counts across the chunk ─────────────────────────
+// Uses the actual detected beat grid counts (variable, 4–12+).
+// Falls back to evenly-spaced counts if absent—but respects chunk length.
+// Also appends any 'and' half-counts detected between beats.
 
-function ensure8Counts(effectiveCounts: BeatCount[] | undefined, startMs: number, endMs: number): BeatCount[] {
-  // If we have 8+ good beats, use the first 8
-  if (effectiveCounts && effectiveCounts.length >= 8) return effectiveCounts.slice(0, 8);
+function _detectAndCounts(beats: BeatCount[], intervalSec: number): BeatCount[] {
+  // Simple heuristic: if there's ~50% temporal gap, insert an 'and' count
+  const result: BeatCount[] = [];
+  for (let i = 0; i < beats.length; i++) {
+    result.push(beats[i]);
+    if (i + 1 < beats.length) {
+      const gap = beats[i + 1].time - beats[i].time;
+      if (gap > intervalSec * 0.75) {
+        // Midpoint is an "and" count
+        result.push({
+          count: beats[i].count + 0.5 as any, // typed as any for display purposes
+          time: (beats[i].time + beats[i + 1].time) / 2,
+        });
+      }
+    }
+  }
+  return result;
+}
 
-  // Otherwise space 8 counts evenly across the chunk.
-  // Minimum interval 0.4s so the teach loop has time to speak between pauses.
-  const durSec = Math.max(0.4 * 8, (endMs - startMs) / 1000);
-  const interval = durSec / 8;
-  return Array.from({ length: 8 }, (_, i) => ({
+function ensureCounts(effectiveCounts: BeatCount[] | undefined, startMs: number, endMs: number): BeatCount[] {
+  const durSec = (endMs - startMs) / 1000;
+  if (effectiveCounts && effectiveCounts.length > 0) {
+    // Use actual detected counts—they might be 4, 5, 6, 8, 12, etc.
+    const withAnd = _detectAndCounts(effectiveCounts, durSec / (effectiveCounts.length));
+    return withAnd;
+  }
+
+  // Fallback: estimate count based on chunk duration (~0.5s per beat = ~120 BPM)
+  const estimatedCount = Math.max(4, Math.min(16, Math.round(durSec / 0.5)));
+  const interval = durSec / estimatedCount;
+  return Array.from({ length: estimatedCount }, (_, i) => ({
     count: i + 1,
     time: startMs / 1000 + i * interval,
   }));
@@ -640,7 +780,7 @@ function VideoScrubber({ videoRef, startMs, endMs }: {
 
 function TeachContent({
   chapter, videoRef, videoSrc, effectiveCounts, poseSlice,
-  onEnd, onCountChange, onLabelChange, onCountdownChange, onPausedChange, onTeachStepChange, onDescribePhase, audioCtx, seekRef, controlRef,
+  onEnd, onCountChange, onLabelChange, onCountdownChange, onPausedChange, onTeachStepChange, onDescribePhase, onFreezePhase, audioCtx, seekRef, controlRef,
 }: {
   chapter: Chapter;
   videoRef: React.RefObject<HTMLVideoElement>;
@@ -654,6 +794,7 @@ function TeachContent({
   onPausedChange: (p: boolean) => void;
   onTeachStepChange?: (step: number) => void;
   onDescribePhase?: (active: boolean) => void;
+  onFreezePhase?: (active: boolean) => void;
   audioCtx: AudioContext | null;
   seekRef: { current: ((n: number) => void) | null };
   controlRef: { current: { pause: () => void; resume: () => void; rewind: () => void } | null };
@@ -662,7 +803,22 @@ function TeachContent({
   const [localPaused, setLocalPaused] = useState(false);
   const planRef = useRef<TeachPlan | null>(null);
   const audioMapRef = useRef(new Map<string, AudioBuffer>());
+  // Keep TTS cache bounded to avoid unbounded memory growth
+  const addToTTSCache = (key: string, buf: AudioBuffer) => {
+    const map = audioMapRef.current;
+    map.set(key, buf);
+    if (map.size > 30) {
+      const first = map.keys().next().value;
+      map.delete(first);
+    }
+  };
   const mountedRef = useRef(true);
+  // Ensure AudioContext is always available — parent may pass null on first render
+  const localCtxRef = useRef<AudioContext | null>(null);
+  const ctx: AudioContext | null = audioCtx ?? (() => {
+    if (!localCtxRef.current) { try { localCtxRef.current = new AudioContext(); } catch {} }
+    return localCtxRef.current;
+  })();
   const scheduledRef = useRef<AudioBufferSourceNode[]>([]);
   const seekToRef = useRef<number | null>(null);
   const onEndRef = useRef(onEnd);
@@ -671,6 +827,7 @@ function TeachContent({
   const onCDRef = useRef(onCountdownChange);
   const onTSCRef = useRef(onTeachStepChange);
   const onDPRef = useRef(onDescribePhase);
+  const onFPRef = useRef(onFreezePhase);
   // Pause / rewind state — shared between the building loop and controlRef
   const pauseState = useRef({ paused: false, videoWasPlaying: false, resolve: null as (() => void) | null });
   const rewindTrig = useRef(false);
@@ -681,7 +838,8 @@ function TeachContent({
     onCDRef.current = onCountdownChange;
     onTSCRef.current = onTeachStepChange;
     onDPRef.current = onDescribePhase;
-  }, [onEnd, onCountChange, onLabelChange, onCountdownChange, onTeachStepChange, onDescribePhase]);
+    onFPRef.current = onFreezePhase;
+  }, [onEnd, onCountChange, onLabelChange, onCountdownChange, onTeachStepChange, onDescribePhase, onFreezePhase]);
 
   // Expose seek-to-count to parent (1-based count number)
   useEffect(() => {
@@ -705,7 +863,7 @@ function TeachContent({
         window.speechSynthesis?.pause();
         for (const s of scheduledRef.current) { try { s.stop(); } catch {} }
         scheduledRef.current = [];
-        audioCtx?.suspend();
+        audioCtx?.suspend().catch(() => {});
         setLocalPaused(true);
         onPausedChange(true);
       },
@@ -717,7 +875,7 @@ function TeachContent({
         res?.();
         if (ps.videoWasPlaying) v?.play().catch(() => {});
         window.speechSynthesis?.resume();
-        audioCtx?.resume();
+        audioCtx?.resume().catch(() => {});
         setLocalPaused(false);
         onPausedChange(false);
       },
@@ -738,16 +896,20 @@ function TeachContent({
   // ── Init: build plan + pre-synthesize all narration tokens ─────────────────
   useEffect(() => {
     mountedRef.current = true;
-    const v = videoRef.current;
-    if (v && videoSrc && !v.src) { v.src = videoSrc; v.load(); }
 
     buildTeachPlan(chapter.id, effectiveCounts, poseSlice, chapter.startTimeMs, chapter.endTimeMs)
-      .then(async plan => {
+      .then(plan => {
         if (!mountedRef.current) return;
         planRef.current = plan;
-        if (audioCtx) {
-          const bufs = await presynthTeach(plan, audioCtx);
-          if (mountedRef.current) audioMapRef.current = bufs;
+        // Start teaching immediately — no blocking presynth.
+        // Gemini buffers warm up in the background; Web Speech covers uncached text.
+        if (ctx) {
+          presynthTeach(plan, ctx).then(bufs => {
+            if (mountedRef.current) {
+              audioMapRef.current = bufs;
+              console.log(`[TeachContent] Gemini TTS warmed: ${bufs.size} buffers`);
+            }
+          }).catch(() => {});
         }
         if (mountedRef.current) setPhase('teaching');
       });
@@ -771,7 +933,7 @@ function TeachContent({
     if (phase !== 'teaching') return;
     const v = videoRef.current;
     const plan = planRef.current;
-    const ctx = audioCtx;
+    // Use component-level ctx (never null — creates its own AudioContext if prop is null)
     if (!v || !plan) return;
 
     const cancel = { cancelled: false };
@@ -781,39 +943,51 @@ function TeachContent({
       scheduledRef.current = [];
     };
 
-    // Speak text: tries Gemini AudioBuffer, falls back to Web Speech API.
-    const speak = (text: string, wait: boolean): Promise<void> => {
-      const buf = audioMapRef.current.get(text);
-      if (buf && ctx) {
-        return new Promise(resolve => {
-          stopScheduled();
-          const src = ctx.createBufferSource();
-          src.buffer = buf;
-          src.connect(ctx.destination);
-          if (wait) {
-            src.onended = () => resolve();
-            setTimeout(() => resolve(), (buf.duration + 2) * 1000);
-          } else {
-            resolve();
-          }
-          src.start();
-          scheduledRef.current.push(src);
-        });
-      }
+    // Play an AudioBuffer via Web Audio.
+    const playBuf = (buf: AudioBuffer, wait: boolean): Promise<void> => new Promise(resolve => {
+      stopScheduled();
+      const src = ctx!.createBufferSource();
+      src.buffer = buf;
+      src.connect(ctx!.destination);
+      if (wait) { src.onended = () => resolve(); setTimeout(() => resolve(), (buf.duration + 2) * 1000); }
+      else resolve();
+      const doStart = () => { src.start(); scheduledRef.current.push(src); };
+      if (ctx!.state === 'suspended') ctx!.resume().then(doStart).catch(doStart);
+      else doStart();
+    });
+
+    // Web Speech fallback.
+    const speakWS = (text: string, wait: boolean): Promise<void> => {
       if (!window.speechSynthesis) return Promise.resolve();
-      if (!wait) {
-        window.speechSynthesis.cancel();
-        const u = new SpeechSynthesisUtterance(text); u.rate = 0.88;
-        window.speechSynthesis.speak(u);
-        return Promise.resolve();
-      }
+      window.speechSynthesis.cancel();
+      const u = new SpeechSynthesisUtterance(text); u.rate = 0.88;
+      if (!wait) { window.speechSynthesis.speak(u); return Promise.resolve(); }
       return new Promise(resolve => {
-        window.speechSynthesis.cancel();
-        const u = new SpeechSynthesisUtterance(text); u.rate = 0.88;
         const done = () => resolve();
         u.onend = done; u.onerror = done; setTimeout(done, 7000);
         window.speechSynthesis.speak(u);
       });
+    };
+
+    // Speak text:
+    //  • If cached → Gemini (instant).
+    //  • If wait=true and not cached → synthesize now inline (we're already waiting for speech).
+    //  • If wait=false and not cached → Web Speech immediately, synthesize in background for next time.
+    const speak = (text: string, wait: boolean): Promise<void> => {
+      const cached = audioMapRef.current.get(text);
+      if (cached && ctx) return playBuf(cached, wait);
+
+      if (wait && ctx) {
+        // Synthesize inline — caller is already waiting for speech to finish
+        return synthesizeTTS(text, ctx).then(buf => {
+          if (buf) { addToTTSCache(text, buf); return playBuf(buf, true); }
+          return speakWS(text, true);
+        }).catch(() => speakWS(text, true));
+      }
+
+      // Fire-and-forget: Web Speech now, cache Gemini for next time
+      if (ctx) synthesizeTTS(text, ctx).then(buf => { if (buf) addToTTSCache(text, buf); }).catch(() => {});
+      return speakWS(text, false);
     };
 
     const aborted = () => cancel.cancelled || rewindTrig.current;
@@ -863,7 +1037,6 @@ function TeachContent({
       const beats = plan.beats;
       const n = beats.length;
       const chunkEnd = chapter.endTimeMs > 0 ? chapter.endTimeMs / 1000 : (v.duration ?? 999);
-      const endOf = (c: number) => c + 1 < n ? beats[c + 1].time : chunkEnd;
 
       let c = 0;
       // Jump to seeked count or rewind by 1
@@ -885,11 +1058,13 @@ function TeachContent({
         rewindTrig.current = false;
         onTSCRef.current?.(c + 1); // report 1-based step to parent for progress bar
         const i = c + 1;
-        const countEnd = endOf(c);
+        const countEnd = beats[c].time;
 
         // ── 1. TELEPORT to beat[0], cumulative run ──────────────────────────
-        v.pause();
-        v.currentTime = beats[0].time;
+        // For count 1, start from the beginning of the chunk (start → 1)
+        // For count 2+, start from beats[0] (the first count)
+        const cumStartTime = c === 0 ? (chapter.startTimeMs / 1000) : beats[0].time;
+        await seekVideo(v, cumStartTime);
         // For count 2+, hold at beat[0] and announce "from start till X" before playing
         if (i > 1 && !aborted()) {
           await speak(`from start till ${COUNT_SPOKEN[i]}`, true);
@@ -899,9 +1074,10 @@ function TeachContent({
         if (aborted()) { if (rewindTrig.current) { goToSeekOrRewind(); continue; } return; }
         v.playbackRate = 0.4;
         await v.play().catch(() => {});
-        speak(COUNT_SPOKEN.slice(1, i + 1).join(', '), false);
 
+        // Real-time count narration: say each count exactly as the video reaches its beat
         await new Promise<void>(resolve => {
+          const said = new Set<number>();
           const tick = () => {
             if (aborted()) { resolve(); return; }
             const t = v.currentTime;
@@ -910,7 +1086,14 @@ function TeachContent({
               if (t >= beats[j].time - 0.14 && t < beats[j].time + 0.5) { display = j + 1; break; }
             }
             onCCRef.current(display);
-            if (t >= countEnd - 0.04) { resolve(); return; }
+            // Narrator says each count right ON the beat (only once per count)
+            for (let j = 0; j < i; j++) {
+              if (!said.has(j) && t >= beats[j].time - 0.02) {
+                said.add(j);
+                speak(COUNT_SPOKEN[j + 1], false);
+              }
+            }
+            if (t >= countEnd) { v.pause(); v.currentTime = countEnd; resolve(); return; }
             requestAnimationFrame(tick);
           };
           requestAnimationFrame(tick);
@@ -919,52 +1102,148 @@ function TeachContent({
         v.pause();
         onCCRef.current(i);
 
-        // ── 2. DESCRIBE — show animated stickman split while narrator speaks ──
+        // ── 2. DESCRIBE — stickman animates i-1→i while narrator speaks ──────────
+        // Wait for both speech AND 2 full animation cycles before proceeding.
+        onCCRef.current(null); // Clear the stale count number before describing
+        onLCRef.current('DESCRIBE');
         onDPRef.current?.(true);
+        const descFromT = c > 0 ? beats[c - 1].time : beats[0].time;
+        const descToT   = beats[c].time;
+        const descFrameCount = poseSlice
+          ? poseSlice.filter((f: any) => {
+              const t: number = f?.t ?? f?.time ?? 0;
+              return t >= descFromT - 0.05 && t <= descToT + 0.05;
+            }).length
+          : 0;
+        // CYCLE_MS in TeachPoseAnimator = frames * 600 (2× speed); min 1200ms ensures 2 visible cycles
+        const animCycleMs = Math.max(1200, descFrameCount * 600);
+        const animTwoCycles = 2 * animCycleMs;
+        const descStart = Date.now();
         await speak(plan.descriptions.get(i) ?? COUNT_SPOKEN[i] ?? String(i), true);
+        const descElapsed = Date.now() - descStart;
+        const descRemaining = animTwoCycles - descElapsed;
+        if (descRemaining > 0 && !aborted()) await sleepMs(descRemaining);
         onDPRef.current?.(false);
+        onLCRef.current(null);
         if (aborted()) { if (rewindTrig.current) { goToSeekOrRewind(); continue; } return; }
+
+        // ── 2b. FREEZE CHECK — hold final frame 5s, narrator cues posture check ──
+        onFPRef.current?.(true);
+        speak('check your posture', false);
+        await sleepMs(5000);
+        onFPRef.current?.(false);
+        if (aborted()) { if (rewindTrig.current) { goToSeekOrRewind(); continue; } return; }
+
         onCCRef.current(null);
         await sleepMs(200);
 
-        // ── 3. ISOLATED REPLAY ×2 (always — count 1 reverses to its own start) ──
+        // ── 2c/2d. "HOW TO GO" ×2 — demo current count i ──────────────────────
+        // HOW TO GO: starts from i-1 to i (half the length of trying)
+        // Skip for the first count (i=1) per user request
+        if (!aborted() && c > 0) {
+          const howStart = beats[c - 1].time; // i-1
+          const howEnd   = beats[c].time;     // i
+          for (let rep = 0; rep < 2 && !aborted(); rep++) {
+            await reverseSeekTo(howStart);
+            if (aborted()) break;
+            speak(howToGoPhrase(i - 1, i), false);
+            if (aborted()) break;
+            onCCRef.current(i - 1);
+            if (aborted()) break;
+            onLCRef.current(rep === 0 ? `How to go from ${COUNT_SPOKEN[i - 1]} to ${COUNT_SPOKEN[i]}` : `Again`);
+            onCDRef.current('2'); await sleepMs(1000); if (aborted()) break;
+            onCDRef.current('1'); await sleepMs(1000); if (aborted()) break;
+            onCDRef.current('go'); await sleepMs(200); if (aborted()) break;
+            onCDRef.current(null);
+            v.playbackRate = 0.25;
+            await v.play().catch(() => {});
+            // Speak ALL intermediate counts as they appear on the beat
+            await new Promise<void>(resolve => {
+              const said = new Set<number>();
+              // Count indices in this range: c-1 to c (inclusive)
+              for (let beatIdx = c - 1; beatIdx <= c; beatIdx++) {
+                if (!aborted() && beatIdx >= 0) { said.add(beatIdx); }
+              }
+              const tick = () => {
+                if (aborted()) { resolve(); return; }
+                const t = v.currentTime;
+                for (let beatIdx = c - 1; beatIdx <= c; beatIdx++) {
+                  if (beatIdx < 0) continue;
+                  if (!said.has(beatIdx) && t >= beats[beatIdx].time - 0.02) {
+                    said.add(beatIdx);
+                    speak(COUNT_SPOKEN[beatIdx + 1], false);
+                    onCCRef.current(beatIdx + 1);
+                  }
+                }
+                if (t >= howEnd + 0.22) { resolve(); return; }
+                requestAnimationFrame(tick);
+              };
+              requestAnimationFrame(tick);
+            });
+            v.pause(); onCCRef.current(null); onLCRef.current(null);
+            await sleepMs(300);
+          }
+        }
+        if (aborted()) { if (rewindTrig.current) { goToSeekOrRewind(); continue; } return; }
+        await sleepMs(150);
+
+        // ── 3. ISOLATED REPLAY ×2 ────────────────────────────────────────────────
+        // TRYING: starts from i-2 to i (full context).
+        // For count 1, start from the beginning of the video chunk (start to 1).
         if (!aborted()) {
-          // For count 1: reverse to beats[0] (same start), play once.
-          // For count 2+: reverse 2 beats back, play from there.
-          const revTarget = beats[Math.max(0, c - 1)].time;
-          const prevCount = i - 1; // 0 for count 1 (no prev beat to narrate)
-          const label = c === 0 ? `→ ${i}` : `${prevCount} → ${i}`;
+          const isFirstCount = c === 0;
+          const revTarget = isFirstCount ? (chapter.startTimeMs / 1000) : beats[Math.max(0, c - 2)].time;
+          const prevCount = isFirstCount ? 0 : Math.max(1, i - 2);
+
+          // Build human-readable label like "1 → 3" or "start → 1"
+          const tryLabel = isFirstCount
+            ? `start → ${i}`
+            : (prevCount > 0 ? `${prevCount} → ${i}` : `→ ${i}`);
 
           for (let rep = 0; rep < 2 && !aborted(); rep++) {
             await reverseSeekTo(revTarget);
             if (aborted()) break;
 
-            // Announce BEFORE countdown so the phrase finishes before video plays
-            speak(rep === 0 ? tryingPhrase(i) : 'again', false);
+            speak(rep === 0 ? tryingPhrase(i, isFirstCount ? 0 : prevCount) : 'again', false);
 
-            // Countdown: 2 · 1 · go
             if (prevCount > 0) onCCRef.current(prevCount);
-            onLCRef.current(label);
+            const naturalLabel = isFirstCount
+            ? `Trying start to ${COUNT_SPOKEN[i]}`
+            : `Trying ${COUNT_SPOKEN[prevCount]} to ${COUNT_SPOKEN[i]}`;
+          onLCRef.current(rep === 0 ? naturalLabel : `Again `);
             onCDRef.current('2'); await sleepMs(1000); if (aborted()) break;
             onCDRef.current('1'); await sleepMs(1000); if (aborted()) break;
             onCDRef.current('go'); await sleepMs(200); if (aborted()) break;
             onCDRef.current(null); onLCRef.current(null); onCCRef.current(null);
 
-            // Forward play: narrator fires at beats[c-1] (if exists) and beats[c]
+            // Forward play: narrator says ALL intermediate counts as they appear
             v.playbackRate = 0.25;
             await v.play().catch(() => {});
-            let saidPrev = false, saidCurr = false;
             await new Promise<void>(resolve => {
+              const said = new Set<number>();
+              // Count indices to speak: from start count up to and including current count
+              const startBeats = isFirstCount ? -1 : (c - 2); // c=0 => -1 (start), c=1 => -1 (start for count 2), c>=2 => c-2
+              // For first count, we still want to say "one" when reaching it
+              const firstBeatToSay = isFirstCount ? 0 : Math.max(0, c - 2);
+              for (let beatIdx = firstBeatToSay; beatIdx <= c; beatIdx++) {
+                if (!aborted()) said.add(beatIdx);
+              }
               const tick = () => {
                 if (aborted()) { resolve(); return; }
                 const t = v.currentTime;
-                if (!saidPrev && prevCount > 0 && t >= beats[c - 1].time - 0.12) {
-                  saidPrev = true; speak(COUNT_SPOKEN[prevCount], false); onCCRef.current(prevCount);
+                for (let beatIdx = firstBeatToSay; beatIdx <= c; beatIdx++) {
+                  if (!said.has(beatIdx)) continue;
+                  const beatTime = beatIdx >= 0 ? beats[beatIdx].time : chapter.startTimeMs / 1000;
+                  if (t >= beatTime - 0.02) {
+                    said.delete(beatIdx); // only say each count once
+                    const countNumber = beatIdx >= 0 ? (beatIdx + 1) : 0; // 0 for start
+                    if (countNumber > 0) {
+                      speak(COUNT_SPOKEN[countNumber], false);
+                      onCCRef.current(countNumber);
+                    }
+                  }
                 }
-                if (!saidCurr && t >= beats[c].time - 0.12) {
-                  saidCurr = true; speak(COUNT_SPOKEN[i], false); onCCRef.current(i);
-                }
-                if (t >= countEnd - 0.04) { resolve(); return; }
+                if (t >= beats[c].time + 0.22) { resolve(); return; }
                 requestAnimationFrame(tick);
               };
               requestAnimationFrame(tick);
@@ -993,6 +1272,8 @@ function TeachContent({
       v.pause();
       window.speechSynthesis?.cancel();
       onCCRef.current(null); onLCRef.current(null); onCDRef.current(null);
+      onDPRef.current?.(false);
+      onFPRef.current?.(false);
     };
   }, [phase]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -1012,7 +1293,10 @@ function TeachContent({
         await v.play().catch(() => {});
 
         const fired = new Set<number>();
+        const lastBeat = plan.beats[plan.beats.length - 1];
         const chunkEnd = chapter.endTimeMs > 0 ? chapter.endTimeMs / 1000 : (v.duration ?? 999);
+        // Don't stop before the last beat has been passed
+        const endGuard = Math.max(chunkEnd, (lastBeat?.time ?? 0) + 0.3);
 
         await new Promise<void>(resolve => {
           const tick = () => {
@@ -1022,10 +1306,10 @@ function TeachContent({
               if (!fired.has(beat.count) && t >= beat.time - 0.15) {
                 fired.add(beat.count);
                 onCCRef.current(beat.count);
-                setTimeout(() => onCCRef.current(null), 380);
+                setTimeout(() => onCCRef.current(null), 800);
               }
             }
-            if (t >= chunkEnd - 0.1) { resolve(); return; }
+            if (t >= endGuard - 0.1) { resolve(); return; }
             requestAnimationFrame(tick);
           };
           requestAnimationFrame(tick);
@@ -1179,7 +1463,9 @@ function CountCaption({ videoRef, rangeCounts, bpm, startTimeMs, speakCounts = f
 
 // ── EndOfChapterScreen ─────────────────────────────────────────────────────────
 
-function EndOfChapterScreen({ nextTitle, onRetry, onNext, cameraMode, onCameraModeChange }: {
+function EndOfChapterScreen({ score, jointScores, nextTitle, onRetry, onNext, cameraMode, onCameraModeChange }: {
+  score: FinalScore | null;
+  jointScores: JointScore[];
   nextTitle: string | null;
   onRetry: () => void;
   onNext: () => void;
@@ -1195,7 +1481,7 @@ function EndOfChapterScreen({ nextTitle, onRetry, onNext, cameraMode, onCameraMo
   }, []);
 
   useEffect(() => {
-    if (cd <= 0 && !firedRef.current) { firedRef.current = true; onRetry(); return; }
+    // Countdown runs to 0 but does NOT auto-retry — user must click
     if (cd <= 0) return;
     const t = setTimeout(() => setCd(c => c - 1), 1000);
     return () => clearTimeout(t);
@@ -1203,23 +1489,38 @@ function EndOfChapterScreen({ nextTitle, onRetry, onNext, cameraMode, onCameraMo
   }, [cd]);
 
   const radius = 28; const circ = 2 * Math.PI * radius;
-  const dash = circ * (cd / 5);
+  // Score computation
+  const totalJoint = jointScores.length ? jointScores.reduce((s, j) => s + j.score, 0) / jointScores.length : 0;
+  const pct = Math.round(totalJoint);
+  const isGood = pct >= 80;
 
   return (
     <div className="absolute inset-0 z-50 bg-black/92 backdrop-blur-sm flex items-center justify-center p-8">
-      <div className="max-w-xs w-full space-y-5">
+      <style>{`
+        @keyframes confetti-fall {
+          0% { transform: translateY(-20%) rotate(0deg); opacity: 1; }
+          100% { transform: translateY(120%) rotate(720deg); opacity: 0; }
+        }
+      `}</style>
+      <div className="max-w-sm w-full space-y-5">
 
-        <div className="flex flex-col items-center gap-2">
-          <svg width="68" height="68" className="-rotate-90">
-            <circle cx="34" cy="34" r={radius} fill="none" stroke="rgba(255,255,255,0.07)" strokeWidth="4" />
-            <circle cx="34" cy="34" r={radius} fill="none" stroke="rgba(139,92,246,0.75)" strokeWidth="4"
-              strokeDasharray={`${dash} ${circ}`} strokeLinecap="round"
-              style={{ transition: 'stroke-dasharray 1s linear' }} />
-            <text x="34" y="34" textAnchor="middle" dominantBaseline="central" fill="white" fontSize="17" fontWeight="bold"
-              style={{ transform: 'rotate(90deg)', transformOrigin: '34px 34px' }}>{cd}</text>
-          </svg>
-          <p className="text-white/35 text-xs text-center">No input → replays this chapter automatically</p>
-        </div>
+        {/* Animated score ring */}
+        {score && (
+          <div className="flex flex-col items-center gap-3">
+            <div className="relative">
+              <svg width="120" height="120" className="-rotate-90">
+                <circle cx="60" cy="60" r={50} fill="none" stroke="rgba(255,255,255,0.07)" strokeWidth="6" />
+                <circle cx="60" cy="60" r={50} fill="none" stroke={isGood ? 'rgba(34,197,94,0.85)' : 'rgba(139,92,246,0.85)'} strokeWidth="6"
+                  strokeDasharray={`${2 * Math.PI * 50 * (pct / 100)} ${2 * Math.PI * 50}`} strokeLinecap="round"
+                  style={{ transition: 'stroke-dasharray 1.5s ease-out' }} />
+              </svg>
+              <div className="absolute inset-0 flex flex-col items-center justify-center">
+                <span className="text-4xl font-black text-white">{pct}%</span>
+              </div>
+            </div>
+            <p className="text-white/50 text-sm font-medium">{isGood ? '🎉 Great job!' : 'Keep practicing!'}</p>
+          </div>
+        )}
 
         <div className="bg-white/4 border border-white/8 rounded-xl p-3 space-y-2">
           <p className="text-white/25 text-[10px] uppercase tracking-widest">Camera for next chapter</p>
@@ -1277,16 +1578,32 @@ function ChapterSidebar({ chapters, currentIdx, onSelect, routine }: {
           const durMs = ch.endTimeMs > ch.startTimeMs ? ch.endTimeMs - ch.startTimeMs : 0;
           return (
             <button key={ch.id} ref={isActive ? activeRef : null} onClick={() => onSelect(idx)}
-              className={`w-full flex items-start gap-2.5 px-3 py-2.5 text-left transition-all border-b border-white/4 hover:bg-white/4 ${isActive ? 'bg-violet-600/15 border-l-[3px] border-l-violet-500' : 'border-l-[3px] border-l-transparent'}`}>
-              <div className="shrink-0 w-[68px] h-10 rounded-md overflow-hidden bg-white/5 relative">
-                {thumbnail && <img src={thumbnail} alt="" className="w-full h-full object-cover opacity-55" />}
-                <div className={`absolute inset-0 flex items-center justify-center ${isActive ? 'bg-violet-500/30' : ''}`}>
-                  {isActive ? <Play className="w-3.5 h-3.5 text-violet-300 fill-current" /> : <span className="text-sm">{ch.emoji}</span>}
+              className={`w-full flex items-start gap-3 px-3.5 py-3 text-left transition-all border-b border-white/4 hover:bg-white/5 group ${isActive ? 'bg-violet-600/12 border-l-[3px] border-l-violet-500 shadow-[inset_0_0_20px_rgba(139,92,246,0.08)]' : 'border-l-[3px] border-l-transparent'}`}>
+              <div className={`shrink-0 w-[72px] h-[44px] rounded-lg overflow-hidden relative transition-shadow duration-300 ${isActive ? 'shadow-[0_0_16px_rgba(139,92,246,0.35)]' : 'shadow-sm'}`}>
+                <div className="absolute inset-0 bg-cover bg-center" style={{ backgroundImage: `url(${thumbnail})`, opacity: 0.5 }} />
+                <div className="absolute inset-0 bg-black/30" />
+                <div className={`absolute inset-0 flex items-center justify-center ${isActive ? 'bg-violet-500/20' : 'group-hover:bg-white/5'}`}>
+                  {isActive ? <Play className="w-4 h-4 text-violet-300 fill-current" /> : <span className="text-sm">{ch.emoji}</span>}
                 </div>
+                {/* Duration badge for active item */}
+                {durMs > 0 && (
+                  <span className="absolute bottom-0.5 right-0.5 text-[9px] font-medium bg-black/60 text-white/70 px-1.5 py-0.5 rounded-md">
+                    {fmtMs(durMs)}
+                  </span>
+                )}
               </div>
               <div className="flex-1 min-w-0">
-                <p className={`text-[11px] font-semibold leading-tight ${isActive ? 'text-violet-200' : 'text-white/60'}`}>{ch.title}</p>
-                <p className="text-[10px] text-white/22 mt-0.5">{idx + 1}{durMs > 0 ? ` · ${fmtMs(durMs)}` : ''}</p>
+                <p className={`text-[11px] font-semibold leading-tight ${isActive ? 'text-violet-200' : 'text-white/60 group-hover:text-white/80'}`}>{ch.title}</p>
+                <div className="flex items-center gap-1.5 mt-1">
+                  {/* Chapter type tag */}
+                  <span className={`text-[9px] font-medium px-1.5 py-0.5 rounded-md ${
+                    ch.type === 'teach' ? 'bg-violet-500/15 text-violet-300/80' :
+                    ch.type === 'warmup' ? 'bg-amber-500/15 text-amber-300/80' :
+                    ch.type === 'watch' ? 'bg-blue-500/15 text-blue-300/80' :
+                    ch.type === 'practice' ? 'bg-green-500/15 text-green-300/80' :
+                    'bg-white/5 text-white/30'
+                  }`}>{ch.type}</span>
+                </div>
               </div>
             </button>
           );
@@ -1305,7 +1622,7 @@ function TeachProgressBar({ currentStep, totalSteps, onSeek }: {
   onSeek: (count: number) => void;
 }) {
   return (
-    <div className="absolute bottom-0 left-0 right-0 h-9 z-25 flex items-center px-3 gap-1 bg-gradient-to-t from-black/60 to-transparent select-none">
+    <div className="absolute bottom-0 left-0 right-0 h-10 z-25 flex items-center px-3 gap-1.5 bg-gradient-to-t from-black/70 to-transparent select-none">
       {Array.from({ length: totalSteps }, (_, i) => {
         const count = i + 1;
         const isDone = currentStep > count;
@@ -1315,15 +1632,17 @@ function TeachProgressBar({ currentStep, totalSteps, onSeek }: {
             key={count}
             onClick={() => onSeek(count)}
             title={`Jump to count ${count}`}
-            className="flex-1 group relative h-5 flex items-center cursor-pointer"
+            className="flex-1 group relative h-6 flex items-center cursor-pointer"
           >
-            <div className={`w-full rounded-full transition-all duration-150 pointer-events-none ${
-              isActive ? 'h-2 bg-violet-400 shadow-[0_0_6px_rgba(139,92,246,0.7)]'
-              : isDone  ? 'h-1.5 bg-violet-600/60'
-              : 'h-1 bg-white/20 group-hover:h-1.5 group-hover:bg-white/40'
+            {/* Segment bar with active glow */}
+            <div className={`w-full rounded-full transition-all duration-200 pointer-events-none ${
+              isActive ? 'h-2.5 bg-violet-400 shadow-[0_0_10px_rgba(139,92,246,0.8),0_0_20px_rgba(139,92,246,0.4)]'
+              : isDone  ? 'h-2 bg-violet-600/50'
+              : 'h-1.5 bg-white/15 group-hover:h-2 group-hover:bg-white/30'
             }`} />
-            <span className={`absolute inset-x-0 -top-4 text-center text-[9px] font-semibold pointer-events-none transition-opacity ${
-              isActive ? 'text-violet-300 opacity-100' : 'opacity-0 group-hover:opacity-60 text-white/60'
+            {/* Hover & active labels */}
+            <span className={`absolute inset-x-0 -top-5 text-center text-[10px] font-bold pointer-events-none transition-all duration-150 ${
+              isActive ? 'text-violet-300 opacity-100 scale-110' : 'opacity-0 group-hover:opacity-80 group-hover:scale-100 text-white/60'
             }`}>{count}</span>
           </div>
         );
@@ -1387,8 +1706,10 @@ function WarmupChapter({ onDone }: { onDone: () => void }) {
   const pct = remaining / WARMUP_TOTAL_SECS;
 
   return (
-    <div className="h-full flex items-center justify-center bg-black">
-      <div className="max-w-sm w-full text-center space-y-6 px-6">
+    <div className="h-full flex items-center justify-center bg-black relative overflow-hidden">
+      {/* Background glow */}
+      <div className="absolute inset-0" style={{ background: 'radial-gradient(circle at 50% 40%, rgba(139,92,246,0.08) 0%, transparent 60%)' }} />
+      <div className="max-w-sm w-full text-center space-y-8 px-6 relative z-10">
         {/* Total countdown ring */}
         <div className="flex justify-center">
           <svg width="108" height="108" className="-rotate-90">
@@ -1402,19 +1723,27 @@ function WarmupChapter({ onDone }: { onDone: () => void }) {
         </div>
 
         {/* Exercise prompt */}
-        <div className="space-y-2">
-          <div className="text-6xl">{exercise.icon}</div>
-          <h2 className="text-2xl font-bold text-white">{exercise.name}</h2>
-          <p className="text-white/45 text-sm leading-relaxed">{exercise.desc}</p>
-          <p className="text-white/20 text-xs">{exerciseRemaining}s left on this exercise</p>
+        <div className="space-y-3">
+          <div className="text-7xl leading-none drop-shadow-lg">{exercise.icon}</div>
+          <h2 className="text-3xl font-black text-white tracking-tight">{exercise.name}</h2>
+          <p className="text-white/50 text-sm leading-relaxed max-w-[260px] mx-auto">{exercise.desc}</p>
+          
+          {/* Per-exercise progress bar */}
+          <div className="flex items-center justify-center gap-3 mt-2">
+            <div className="h-1.5 w-24 rounded-full bg-white/10 overflow-hidden">
+              <div className="h-full rounded-full bg-violet-400/80 transition-all duration-500"
+                style={{ width: `${(exerciseRemaining / WARMUP_PER_EXERCISE) * 100}%` }} />
+            </div>
+            <span className="text-white/30 text-xs font-mono">{exerciseRemaining}s</span>
+          </div>
 
           {/* Progress dots */}
-          <div className="flex justify-center gap-2 pt-2">
+          <div className="flex justify-center gap-2.5 pt-4">
             {WARMUP_EXERCISES.map((_, i) => (
               <div key={i} className={`rounded-full transition-all duration-500 ${
-                i < exerciseIdx ? 'w-2 h-2 bg-violet-500'
-                : i === exerciseIdx ? 'w-3 h-3 bg-violet-400'
-                : 'w-2 h-2 bg-white/12'
+                i < exerciseIdx ? 'w-2.5 h-2.5 bg-violet-400 shadow-[0_0_6px_rgba(139,92,246,0.5)]'
+                : i === exerciseIdx ? 'w-3 h-3 bg-amber-400 shadow-[0_0_8px_rgba(251,191,36,0.5)] scale-110'
+                : 'w-2.5 h-2.5 bg-white/10'
               }`} />
             ))}
           </div>
@@ -1422,7 +1751,7 @@ function WarmupChapter({ onDone }: { onDone: () => void }) {
 
         <button
           onClick={() => { if (!firedRef.current) { firedRef.current = true; onDoneRef.current(); } }}
-          className="w-full py-3.5 bg-white/7 hover:bg-white/13 text-white/50 text-sm font-medium rounded-2xl transition-all border border-white/8"
+          className="w-full py-3.5 bg-white/5 hover:bg-white/10 text-white/40 hover:text-white/70 text-sm font-semibold rounded-2xl transition-all border border-white/10 backdrop-blur-sm"
         >
           Skip warmup →
         </button>
@@ -1432,7 +1761,7 @@ function WarmupChapter({ onDone }: { onDone: () => void }) {
 }
 
 // ── TeachPoseAnimator ─────────────────────────────────────────────────────────
-// Animates pose frames between two beat timestamps, highlighting the cue joint.
+// Smooth RAF-interpolated animation through pose frames at ~0.3× real speed.
 
 function TeachPoseAnimator({ poseSlice, fromTime, toTime, cueJointIdx }: {
   poseSlice: any[];
@@ -1440,47 +1769,101 @@ function TeachPoseAnimator({ poseSlice, fromTime, toTime, cueJointIdx }: {
   toTime: number;
   cueJointIdx?: number;
 }) {
-  const [frameIdx, setFrameIdx] = useState(0);
+  const [landmarks, setLandmarks] = useState<any[] | null>(null);
 
+  // Filter frames in the beat range (or fall back to boundary frames)
   const frames = (() => {
     const result: any[] = [];
     for (let i = 0; i < poseSlice.length; i++) {
       const t: number = poseSlice[i]?.t ?? poseSlice[i]?.time ?? (i / 30);
       if (t >= fromTime - 0.05 && t <= toTime + 0.05) result.push(poseSlice[i]);
     }
-    // Fallback: pick 2 boundary frames if range returned nothing
     if (result.length < 2) {
-      let best0 = 0, best1 = poseSlice.length - 1, d0 = Infinity, d1 = Infinity;
+      let b0 = 0, b1 = poseSlice.length - 1, d0 = Infinity, d1 = Infinity;
       for (let i = 0; i < poseSlice.length; i++) {
         const t: number = poseSlice[i]?.t ?? poseSlice[i]?.time ?? (i / 30);
-        if (Math.abs(t - fromTime) < d0) { d0 = Math.abs(t - fromTime); best0 = i; }
-        if (Math.abs(t - toTime) < d1) { d1 = Math.abs(t - toTime); best1 = i; }
+        if (Math.abs(t - fromTime) < d0) { d0 = Math.abs(t - fromTime); b0 = i; }
+        if (Math.abs(t - toTime)   < d1) { d1 = Math.abs(t - toTime);   b1 = i; }
       }
-      return [poseSlice[best0], poseSlice[best1]].filter(Boolean);
+      return [poseSlice[b0], poseSlice[b1]].filter(Boolean);
     }
     return result;
   })();
 
   useEffect(() => {
-    if (frames.length < 2) return;
-    const id = setInterval(() => setFrameIdx(i => (i + 1) % frames.length), 220);
-    return () => clearInterval(id);
-  }, [frames.length]);
+    if (!frames.length) return;
+    if (frames.length === 1) {
+      const f = frames[0];
+      setLandmarks(f?.landmarks ?? (Array.isArray(f) ? f : null));
+      return;
+    }
 
-  const frame = frames[Math.min(frameIdx, frames.length - 1)];
-  const landmarks = frame?.landmarks ?? (Array.isArray(frame) ? frame : null);
-  if (!landmarks) return null;
+    // Render at 30fps (~33ms per frame) for smooth, snappy stickman animation
+    const CYCLE_MS = frames.length * 33;
+    const startMs  = performance.now();
+    let raf: number;
+
+    const tick = (now: number) => {
+      const elapsed = (now - startMs) % CYCLE_MS;
+      const pos     = (elapsed / CYCLE_MS) * (frames.length - 1);
+      const i0      = Math.floor(pos);
+      const i1      = Math.min(i0 + 1, frames.length - 1);
+      const alpha   = pos - i0; // interpolation factor 0→1
+
+      const f0 = frames[i0];
+      const f1 = frames[i1];
+      const lm0: any[] | null = f0?.landmarks ?? (Array.isArray(f0) ? f0 : null);
+      const lm1: any[] | null = f1?.landmarks ?? (Array.isArray(f1) ? f1 : null);
+
+      if (lm0 && lm1 && lm0.length > 0 && lm1.length >= lm0.length) {
+        // Linear interpolation between consecutive frames → smooth 60fps rendering
+        const interp = lm0.map((p: any, j: number) => {
+          const q = lm1[j] ?? p;
+          return {
+            x: p.x + (q.x - p.x) * alpha,
+            y: p.y + (q.y - p.y) * alpha,
+            z: (p.z ?? 0) + ((q.z ?? 0) - (p.z ?? 0)) * alpha,
+            visibility: Math.min(p.visibility ?? 1, q.visibility ?? 1),
+          };
+        });
+        setLandmarks(interp);
+      } else if (lm0) {
+        setLandmarks(lm0);
+      }
+
+      raf = requestAnimationFrame(tick);
+    };
+
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [frames.length, fromTime, toTime]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  if (!landmarks) {
+    return (
+      <div className="flex items-center justify-center" style={{ width: 300, height: 480 }}>
+        <div className="animate-spin rounded-full"
+          style={{ width: 44, height: 44, border: '2px solid rgba(160, 80, 255, 0.15)', borderTopColor: 'rgba(160, 80, 255, 0.75)' }} />
+      </div>
+    );
+  }
 
   return (
-    <StickmanCanvas
-      landmarks={landmarks}
-      mode="full_body"
-      smooth={false}
-      width={300}
-      height={480}
-      color="rgba(255,255,255,0.85)"
-      highlightJoints={cueJointIdx !== undefined ? [cueJointIdx] : undefined}
-    />
+    <div style={{
+      filter: 'drop-shadow(0 0 14px rgba(160, 80, 255, 0.60)) drop-shadow(0 0 4px rgba(240, 220, 255, 0.28))',
+      position: 'relative',
+      width: 300,
+      height: 480,
+    }}>
+      <StickmanCanvas
+        landmarks={landmarks}
+        mode="full_body"
+        smooth
+        width={300}
+        height={480}
+        color="rgba(225, 195, 255, 0.96)"
+        highlightJoints={cueJointIdx !== undefined ? [cueJointIdx] : undefined}
+      />
+    </div>
   );
 }
 
@@ -1493,6 +1876,7 @@ export default function ChapterPlayer() {
 
   const [routine, setRoutine] = useState<DbRoutine | null>(null);
   const [loading, setLoading] = useState(true);
+  const [videoError, setVideoError] = useState<string | null>(null);
   const [chapters, setChapters] = useState<Chapter[]>([]);
   const [hasBeatGrid, setHasBeatGrid] = useState(false);
 
@@ -1507,10 +1891,12 @@ export default function ChapterPlayer() {
   const [hasWebcam, setHasWebcam] = useState(false);
   const [teachCount, setTeachCount] = useState<number | null>(null);
   const [teachLabel, setTeachLabel] = useState<string | null>(null);
+  const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const [teachCountdown, setTeachCountdown] = useState<string | null>(null);
   const [teachPaused, setTeachPaused] = useState(false);
   const [teachStep, setTeachStep] = useState(0);
   const [teachDescribeActive, setTeachDescribeActive] = useState(false);
+  const [teachFreezeActive, setTeachFreezeActive] = useState(false);
   const teachSeekRef = useRef<((n: number) => void) | null>(null);
   const teachControlRef = useRef<{ pause: () => void; resume: () => void; rewind: () => void } | null>(null);
 
@@ -1582,12 +1968,43 @@ export default function ChapterPlayer() {
     async function load() {
       if (!id) { setLoading(false); return; }
       let data: DbRoutine | null = null;
-      if (session?.user?.id) {
-        const res = await supabase.rpc('rpc_get_routine_detail', { p_routine_id: id, p_user_id: session.user.id });
-        if (res.data) data = res.data;
-      }
-      if (!data) {
-        try { const raw = localStorage.getItem(`taal-local-routine-${id}`); if (raw) data = JSON.parse(raw); } catch {}
+      const isDemo = (new URLSearchParams(typeof window !== 'undefined' ? window.location.search : '')).get('demo') === '1' || id === 'demo';
+      if (isDemo) {
+        data = {
+          id: id || 'demo',
+          title: 'Bom Diggy Diggy (Demo)',
+          duration_seconds: 12,
+          video_blob_url: '/videos/test.mp4',
+          chunks: [
+            { id: 'ch-0', chunk_index: 0, start_time_ms: 0, end_time_ms: 4100, description: 'Intro', pose_slice_json: '[]' },
+            { id: 'ch-1', chunk_index: 1, start_time_ms: 4100, end_time_ms: 8200, description: 'Verse', pose_slice_json: '[]' },
+            { id: 'ch-2', chunk_index: 2, start_time_ms: 8200, end_time_ms: 12300, description: 'Chorus', pose_slice_json: '[]' },
+          ],
+          beat_grid_json: {
+            bpm: 140,
+            beats: [0.5, 1.28, 2.14, 2.87, 3.64, 4.5, 5.28, 6.14, 6.87, 7.71, 8.5, 9.28, 10.14, 10.87, 11.64],
+            counts: [
+              { count: 1, time: 0.5 }, { count: 2, time: 1.28 }, { count: 3, time: 2.14 },
+              { count: 4, time: 2.87 }, { count: 5, time: 3.64 }, { count: 6, time: 4.5 },
+              { count: 7, time: 5.28 }, { count: 8, time: 6.14 }, { count: 1, time: 6.87 },
+              { count: 2, time: 7.71 }, { count: 3, time: 8.5 }, { count: 4, time: 9.28 },
+              { count: 5, time: 10.14 }, { count: 6, time: 10.87 }, { count: 7, time: 11.64 },
+            ],
+            chunks: [
+              { chunkId: 0, startCount: 1, endCount: 5, startTime: 0, endTime: 4.1 },
+              { chunkId: 1, startCount: 6, endCount: 10, startTime: 4.1, endTime: 8.2 },
+              { chunkId: 2, startCount: 11, endCount: 15, startTime: 8.2, endTime: 12.3 },
+            ]
+          },
+        };
+      } else {
+        if (session?.user?.id) {
+          const res = await supabase.rpc('rpc_get_routine_detail', { p_routine_id: id, p_user_id: session.user.id });
+          if (res.data) data = res.data;
+        }
+        if (!data) {
+          try { const raw = localStorage.getItem(`taal-local-routine-${id}`); if (raw) data = JSON.parse(raw); } catch {}
+        }
       }
       if (!isMountedRef.current) return;
       if (data) {
@@ -1720,7 +2137,8 @@ export default function ChapterPlayer() {
       v.muted = ch.muted;
       v.playbackRate = ch.playbackRate;
 
-      const needsLeadIn = ch.showSplit; // beat-based chapters always get lead-in
+      // Teach, Practice, and Connect always get a lead-in (5-6-7-8 audio countdown)
+      const needsLeadIn = ch.type === 'teach' || ch.type === 'practice' || ch.type === 'connect';
       if (needsLeadIn) {
         const ctx = getCtx();
         if (ctx) {
@@ -1820,7 +2238,7 @@ export default function ChapterPlayer() {
     const loop = () => {
       const w = webcamRef.current; const rv = refVideoRef.current;
       if (w && rv && w.readyState >= 2 && !rv.paused) {
-        processFrame(w, rv.currentTime * 1000, 'all');
+        processFrame(w, rv.currentTime * 1000, 'full');
         if (currentArmScore < 50 && mistakeFrames.current.length < 5) {
           try {
             const c = document.createElement('canvas');
@@ -1868,6 +2286,7 @@ export default function ChapterPlayer() {
 
   const handleNext = useCallback(() => {
     window.speechSynthesis?.cancel();
+    setMobileSidebarOpen(false);
     if (currentIdx < chapters.length - 1) setCurrentIdx(i => i + 1);
     else navigate(`/routine/${id}`);
   }, [currentIdx, chapters.length, navigate, id]);
@@ -1879,13 +2298,60 @@ export default function ChapterPlayer() {
     </div>
   );
   if (!routine || !chapters.length) return (
-    <div className="h-screen bg-black flex items-center justify-center">
-      <div className="text-center space-y-3">
-        <p className="text-white/40">Routine not found</p>
-        <button onClick={() => navigate(-1)} className="text-violet-400 text-sm underline">Go back</button>
+    <div className="h-screen bg-black flex items-center justify-center p-8">
+      <div className="text-center space-y-5 max-w-md">
+        <p className="text-white/40 text-lg">Routine not found</p>
+        <p className="text-white/25 text-sm">This routine may not exist or its data couldn't be loaded.</p>
+
+        {/* Create a demo routine with the test video */}
+        <div className="pt-4">
+          <p className="text-white/30 text-xs uppercase tracking-widest mb-3">Test with demo video</p>
+          <button onClick={() => {
+            // Inject demo routine inline and reload
+            const demoRoutine: DbRoutine = {
+              id: id || 'demo',
+              title: 'Bom Diggy Diggy (Demo)',
+              duration_seconds: 12,
+              thumbnail_url: '',
+              video_blob_url: '/videos/test.mp4',
+              chunks: [
+                { id: 'ch-0', chunk_index: 0, start_time_ms: 0, end_time_ms: 4100, description: 'Intro', pose_slice_json: '[]' },
+                { id: 'ch-1', chunk_index: 1, start_time_ms: 4100, end_time_ms: 8200, description: 'Verse', pose_slice_json: '[]' },
+                { id: 'ch-2', chunk_index: 2, start_time_ms: 8200, end_time_ms: 12300, description: 'Chorus', pose_slice_json: '[]' },
+              ],
+              beat_grid_json: {
+                bpm: 140,
+                beats: [0.5, 1.28, 2.14, 2.87, 3.64, 4.5, 5.28, 6.14, 6.87, 7.71, 8.5, 9.28, 10.14, 10.87, 11.64],
+                counts: [
+                  { count: 1, time: 0.5 }, { count: 2, time: 1.28 }, { count: 3, time: 2.14 },
+                  { count: 4, time: 2.87 }, { count: 5, time: 3.64 }, { count: 6, time: 4.5 },
+                  { count: 7, time: 5.28 }, { count: 8, time: 6.14 }, { count: 1, time: 6.87 },
+                  { count: 2, time: 7.71 }, { count: 3, time: 8.5 }, { count: 4, time: 9.28 },
+                  { count: 5, time: 10.14 }, { count: 6, time: 10.87 }, { count: 7, time: 11.64 },
+                ],
+                chunks: [
+                  { chunkId: 0, startCount: 1, endCount: 5, startTime: 0, endTime: 4.1 },
+                  { chunkId: 1, startCount: 6, endCount: 10, startTime: 4.1, endTime: 8.2 },
+                  { chunkId: 2, startCount: 11, endCount: 15, startTime: 8.2, endTime: 12.3 },
+                ]
+              },
+            };
+            localStorage.setItem(`taal-local-routine-${id || 'demo'}`, JSON.stringify(demoRoutine));
+            // Refresh page to load the new routine
+            window.location.search = '?demo=1';
+          }} className="w-full py-3.5 bg-violet-600 hover:bg-violet-500 text-white font-bold rounded-2xl transition-all shadow-[0_0_18px_rgba(139,92,246,0.35)]">
+            Start Demo with Test Video
+          </button>
+        </div>
+
+        <button onClick={() => navigate(-1)} className="text-violet-400 text-sm underline mt-4">Go back</button>
       </div>
     </div>
   );
+
+  // Check for demo mode - bypasses auth and loads test video
+  const search = new URLSearchParams(typeof window !== 'undefined' ? window.location.search : '');
+  const isDemo = search.get('demo') === '1' || id === 'demo';
 
   // Pose slice for teach narration (cue computation) — IIFE, not a hook
   const teachPoseSlice = (() => {
@@ -1903,7 +2369,7 @@ export default function ChapterPlayer() {
 
   // ── Teach stickman derived values — plain IIFEs, no hooks ─────────────────
   const teachBeats = chapter?.type === 'teach'
-    ? ensure8Counts(effectiveRangeCounts, chapter.startTimeMs, chapter.endTimeMs)
+    ? ensureCounts(effectiveRangeCounts, chapter.startTimeMs, chapter.endTimeMs)
     : [];
 
   const teachCues = (() => {
@@ -1912,15 +2378,17 @@ export default function ChapterPlayer() {
     return cues;
   })();
 
-  // Frames for animated stickman during describe phase (i-1 → i transition)
-  const teachAnimFromTime = teachCount !== null && teachCount > 1
-    ? (teachBeats[teachCount - 2]?.time ?? teachBeats[0]?.time ?? 0)
+  // Frames for animated stickman during describe phase (i-1 → i transition).
+  // Use teachStep when teachCount is null (describe phase holds null count).
+  const activeAnimCount = teachCount ?? teachStep ?? 1;
+  const teachAnimFromTime = activeAnimCount > 1
+    ? (teachBeats[activeAnimCount - 2]?.time ?? teachBeats[0]?.time ?? 0)
     : (teachBeats[0]?.time ?? 0);
-  const teachAnimToTime = teachCount !== null
-    ? (teachBeats[teachCount - 1]?.time ?? teachBeats[teachBeats.length - 1]?.time ?? 1)
+  const teachAnimToTime = activeAnimCount >= 1
+    ? (teachBeats[activeAnimCount - 1]?.time ?? teachBeats[teachBeats.length - 1]?.time ?? 1)
     : 1;
 
-  const teachCueJointName = teachCount !== null ? (teachCues.get(teachCount) ?? null) : null;
+  const teachCueJointName = (teachCount ?? teachStep ?? 0) >= 1 ? (teachCues.get(teachCount ?? teachStep ?? 1) ?? null) : null;
   const teachCueJointIdx = teachCueJointName !== null ? JOINT_IDX[teachCueJointName] : undefined;
   const showTeachSplit = teachDescribeActive && !showEoC && !!teachPoseSlice?.length;
 
@@ -1928,12 +2396,20 @@ export default function ChapterPlayer() {
     <div className="h-screen bg-black flex flex-col overflow-hidden">
 
       {/* ── Top bar ── */}
-      <header className="shrink-0 h-11 flex items-center gap-3 px-3 bg-[#09090e] border-b border-white/6 z-30">
+      <header className="shrink-0 h-11 flex items-center gap-3 px-3 bg-black/60 backdrop-blur-xl border-b border-white/6 z-30 relative">
+        {/* Overall progress line */}
+        <div className="absolute bottom-0 left-0 right-0 h-[2px] bg-white/5">
+          <div className="h-full bg-violet-500/60 transition-all duration-300" style={{ width: `${((currentIdx) / Math.max(chapters.length - 1, 1)) * 100}%` }} />
+        </div>
         <button onClick={() => navigate(`/routine/${id}`)} className="shrink-0 w-7 h-7 flex items-center justify-center text-white/40 hover:text-white transition-colors">
           <ArrowLeft className="w-4 h-4" />
         </button>
-        <p className="flex-1 min-w-0 text-white/55 text-xs font-medium truncate">{chapter?.emoji} {chapter?.title}</p>
-        <span className="shrink-0 text-white/20 text-xs">{currentIdx + 1}/{chapters.length}</span>
+        {/* Mobile sidebar toggle */}
+        <button onClick={() => setMobileSidebarOpen(o => !o)} className="lg:hidden shrink-0 w-7 h-7 flex items-center justify-center text-white/40 hover:text-white transition-colors">
+          <Menu className="w-4 h-4" />
+        </button>
+        <p className="flex-1 min-w-0 text-white/75 text-xs font-medium truncate">{chapter?.emoji} {chapter?.title}</p>
+        <span className="shrink-0 text-white/30 text-xs">{currentIdx + 1}/{chapters.length}</span>
         {!hasBeatGrid && <span className="shrink-0 text-amber-400/60 text-[10px] border border-amber-400/20 px-2 py-0.5 rounded-md">Count-only</span>}
 
         {/* Camera mode cycle: Off → Mirror → AI → Off */}
@@ -1956,7 +2432,7 @@ export default function ChapterPlayer() {
       <div className="flex-1 flex min-h-0">
 
         {/* ── 70% main content ── */}
-        <div className="flex-[7] min-w-0 relative overflow-hidden">
+        <div className="flex-1 lg:flex-[7] min-w-0 relative overflow-hidden">
 
           {/* Warmup — timed guided warmup */}
           {chapter?.type === 'warmup' && <WarmupChapter onDone={handleNext} />}
@@ -1971,7 +2447,26 @@ export default function ChapterPlayer() {
                   ref={refVideoRef}
                   className="absolute inset-0 w-full h-full object-contain"
                   playsInline
+                  onError={(e) => setVideoError('Failed to load video. The link may have expired.')}
+                  onLoadedData={() => setVideoError(null)}
                 />
+                {/* Cinematic radial vignette */}
+                <div className="absolute inset-0 pointer-events-none" style={{
+                  background: 'radial-gradient(circle at 50% 50%, transparent 50%, rgba(0,0,0,0.35) 100%)',
+                }} />
+
+                {/* Video error/loading overlay */}
+                {videoError && (
+                  <div className="absolute inset-0 flex items-center justify-center bg-black/80 z-20">
+                    <div className="text-center">
+                      <p className="text-red-400 font-medium mb-2">⚠️ {videoError}</p>
+                      <button onClick={() => { setVideoError(null); const v = refVideoRef.current; if (v) { v.load(); } }}
+                        className="px-4 py-2 bg-violet-600 text-white rounded-lg text-sm font-medium hover:bg-violet-500 transition-colors">
+                        Retry
+                      </button>
+                    </div>
+                  </div>
+                )}
 
                 {/* Watch chapter 3-2-1 countdown overlay */}
                 {chapter?.type === 'watch' && watchCountdown !== null && (
@@ -2000,7 +2495,7 @@ export default function ChapterPlayer() {
                   <TeachContent
                     key={chapter.id}
                     chapter={chapter}
-                    videoRef={refVideoRef}
+                    videoRef={refVideoRef as React.RefObject<HTMLVideoElement>}
                     videoSrc={videoSrc}
                     effectiveCounts={effectiveRangeCounts}
                     poseSlice={teachPoseSlice}
@@ -2010,6 +2505,7 @@ export default function ChapterPlayer() {
                     onCountdownChange={setTeachCountdown}
                     onPausedChange={setTeachPaused}
                     onDescribePhase={setTeachDescribeActive}
+                    onFreezePhase={setTeachFreezeActive}
                     onTeachStepChange={setTeachStep}
                     audioCtx={audioCtxRef.current}
                     seekRef={teachSeekRef}
@@ -2021,39 +2517,66 @@ export default function ChapterPlayer() {
                 {chapter?.type === 'teach' && !showEoC && (
                   <TeachProgressBar
                     currentStep={teachStep}
-                    totalSteps={8}
+                    totalSteps={teachBeats.length || 8}
                     onSeek={count => teachSeekRef.current?.(count)}
                   />
                 )}
 
                 {/* Beat count caption — muted beat chapters (not teach, not watch) */}
                 {isPlaying && chapter?.muted && chapter?.type !== 'teach' && chapter?.type !== 'watch' && (
-                  <CountCaption videoRef={refVideoRef} rangeCounts={effectiveRangeCounts} bpm={bpm} startTimeMs={chapter.startTimeMs} speakCounts />
+                  <CountCaption videoRef={refVideoRef as React.RefObject<HTMLVideoElement>} rangeCounts={effectiveRangeCounts} bpm={bpm} startTimeMs={chapter.startTimeMs} speakCounts />
                 )}
 
-                {/* Teach overlay — count, transition label, countdown */}
+                {/* Freeze check overlay — "Hold this pose" */}
+                {chapter?.type === 'teach' && teachFreezeActive && (
+                  <div className="absolute inset-0 z-30 pointer-events-none flex flex-col items-center justify-start pt-5">
+                    <div className="px-5 py-2 rounded-xl"
+                      style={{ background: 'rgba(0,0,0,0.62)', border: '1.5px solid rgba(139,92,246,0.55)', backdropFilter: 'blur(6px)' }}>
+                      <span className="font-bold tracking-widest uppercase"
+                        style={{ fontSize: '1.15rem', color: 'rgba(167,139,250,1)', textShadow: '0 2px 10px rgba(0,0,0,0.9)', letterSpacing: '0.12em' }}>
+                        Hold this pose
+                      </span>
+                    </div>
+                  </div>
+                )}
+
+                {/* Teach overlay — Steezy-style: massive centred count + frosted pills */}
                 {chapter?.type === 'teach' && (teachCount !== null || teachLabel !== null || teachCountdown !== null) && (
-                  <div className="absolute top-3 right-3 z-20 pointer-events-none select-none flex flex-col items-end gap-1">
+                  <div className="absolute inset-0 z-20 pointer-events-none select-none flex flex-col items-center justify-center">
+                    {/* Massive glowing count — centre-screen */}
                     {teachCount !== null && (
-                      <span className="font-black tabular-nums leading-none"
-                        style={{ fontSize: '3.5rem', color: 'rgba(255,255,255,0.9)', textShadow: '0 2px 12px rgba(0,0,0,0.8)' }}>
+                      <span className="font-black tabular-nums leading-none transition-all duration-200 ease-out"
+                        style={{
+                          fontSize: '7rem',
+                          color: 'rgba(255,255,255,0.95)',
+                          textShadow: '0 0 40px rgba(139,92,246,0.5), 0 4px 20px rgba(0,0,0,0.9)',
+                          filter: 'drop-shadow(0 0 12px rgba(139,92,246,0.6))',
+                        }}>
                         {teachCount}
                       </span>
                     )}
+                    {/* Frosted-glass label pill */}
                     {teachLabel !== null && (
-                      <span className="font-bold tracking-wide"
-                        style={{ fontSize: '1.05rem', color: 'rgba(139,92,246,0.9)', textShadow: '0 1px 8px rgba(0,0,0,0.9)' }}>
+                      <span className="mt-3 font-bold tracking-widest uppercase px-5 py-2 rounded-full backdrop-blur-xl border border-white/10 transition-all duration-300"
+                        style={{
+                          fontSize: '0.85rem',
+                          color: 'rgba(255,255,255,0.9)',
+                          background: 'rgba(0,0,0,0.45)',
+                          boxShadow: '0 8px 32px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.08)',
+                        }}>
                         {teachLabel}
                       </span>
                     )}
+                    {/* Punchy countdown — 2, 1, GO */}
                     {teachCountdown !== null && (
-                      <span className="font-black tabular-nums leading-none"
+                      <span className="font-black tabular-nums leading-none mt-2 transition-all duration-150 ease-out"
                         style={{
-                          fontSize: teachCountdown === 'go' ? '1.4rem' : '2.8rem',
+                          fontSize: teachCountdown === 'go' ? '2.5rem' : '4.5rem',
                           color: teachCountdown === 'go' ? 'rgba(74,222,128,0.95)' : 'rgba(251,191,36,0.95)',
-                          textShadow: '0 2px 10px rgba(0,0,0,0.9)',
+                          textShadow: '0 0 30px rgba(251,191,36,0.5), 0 4px 20px rgba(0,0,0,0.9)',
+                          transform: teachCountdown === 'go' ? 'scale(1.15)' : 'scale(1)',
                         }}>
-                        {teachCountdown}
+                        {typeof teachCountdown === 'string' ? teachCountdown.toUpperCase() : teachCountdown}
                       </span>
                     )}
                   </div>
@@ -2081,21 +2604,76 @@ export default function ChapterPlayer() {
 
               {/* Animated stickman panel — visible during describe phase only */}
               {showTeachSplit && teachPoseSlice && (
-                <div className="flex-1 relative bg-[#07070d] overflow-hidden flex flex-col items-center justify-center">
+                <div className="flex-1 relative overflow-hidden flex flex-col items-center justify-center"
+                  style={{ background: '#05040c' }}>
+
+                  {/* Stage uplighting — violet footlight rising from below */}
+                  <div className="absolute inset-0 pointer-events-none"
+                    style={{ background: 'radial-gradient(ellipse 70% 55% at 50% 108%, rgba(120, 55, 230, 0.22) 0%, rgba(75, 25, 155, 0.08) 52%, transparent 100%)' }} />
+
+                  {/* Floor bloom */}
+                  <div className="absolute bottom-0 left-0 right-0 pointer-events-none"
+                    style={{ height: '38%', background: 'radial-gradient(ellipse 85% 45% at 50% 100%, rgba(100, 40, 200, 0.11) 0%, transparent 72%)' }} />
+
+                  {/* Stickman */}
                   <TeachPoseAnimator
                     poseSlice={teachPoseSlice}
                     fromTime={teachAnimFromTime}
                     toTime={teachAnimToTime}
                     cueJointIdx={teachCueJointIdx}
                   />
+
+                  {/* Count transition — frosted pill, top-center */}
+                  <div className="absolute top-3 inset-x-0 flex justify-center pointer-events-none">
+                    <div style={{
+                      background: 'rgba(75, 28, 155, 0.32)',
+                      border: '1px solid rgba(185, 130, 255, 0.28)',
+                      backdropFilter: 'blur(10px)',
+                      padding: '3px 16px',
+                      borderRadius: '20px',
+                    }}>
+                      <span style={{ fontSize: '0.6rem', color: 'rgba(205, 170, 255, 0.92)', letterSpacing: '0.18em', fontWeight: 600, textTransform: 'uppercase' }}>
+                        {teachCount !== null && teachCount > 1 ? `${teachCount - 1} → ${teachCount}` : `count ${teachCount ?? ''}`}
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Cue joint badge — frosted card, bottom-center */}
                   {teachCueJointName && (
-                    <div className="absolute bottom-12 inset-x-0 flex flex-col items-center gap-1 pointer-events-none select-none">
-                      <span className="text-[10px] text-green-400/75 font-semibold tracking-widest uppercase">{teachCueJointName.replace(/_/g, ' ')}</span>
-                      <span className="text-[9px] text-white/20">watch this joint</span>
+                    <div className="absolute bottom-10 inset-x-0 flex justify-center pointer-events-none select-none">
+                      <div style={{
+                        display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '5px',
+                        background: 'rgba(12, 6, 28, 0.84)',
+                        border: '1px solid rgba(195, 115, 255, 0.36)',
+                        backdropFilter: 'blur(14px)',
+                        padding: '9px 24px',
+                        borderRadius: '14px',
+                      }}>
+                        <span style={{ fontSize: '0.52rem', color: 'rgba(185, 105, 255, 0.80)', letterSpacing: '0.22em', textTransform: 'uppercase', fontWeight: 600 }}>focus here</span>
+                        <span style={{ fontSize: '0.82rem', color: 'rgba(245, 228, 255, 0.97)', fontWeight: 700, letterSpacing: '0.03em' }}>
+                          {teachCueJointName.replace(/_/g, ' ')}
+                        </span>
+                        <div className="animate-pulse rounded-full"
+                          style={{ width: '6px', height: '6px', background: 'rgba(218, 112, 255, 0.92)', boxShadow: '0 0 9px rgba(218, 112, 255, 0.82)' }} />
+                      </div>
                     </div>
                   )}
-                  <div className="absolute top-2 left-2 text-[9px] text-white/18 pointer-events-none uppercase tracking-widest">
-                    {teachCount !== null && teachCount > 1 ? `${teachCount - 1} → ${teachCount}` : `count ${teachCount ?? ''}`}
+
+                  {/* Beat dot strip — 8 dots, active one glows */}
+                  <div className="absolute bottom-3 inset-x-0 flex justify-center gap-1.5 pointer-events-none">
+                    {Array.from({ length: 8 }, (_, i) => {
+                      const active = (teachCount ?? 0) === i + 1;
+                      return (
+                        <div key={i} style={{
+                          width: active ? '8px' : '5px',
+                          height: active ? '8px' : '5px',
+                          borderRadius: '50%',
+                          background: active ? 'rgba(210, 128, 255, 1)' : 'rgba(255, 255, 255, 0.14)',
+                          boxShadow: active ? '0 0 10px rgba(200, 108, 255, 0.88)' : 'none',
+                          transition: 'all 0.18s ease',
+                        }} />
+                      );
+                    })}
                   </div>
                 </div>
               )}
@@ -2125,6 +2703,8 @@ export default function ChapterPlayer() {
           {/* ── End-of-chapter screen ── */}
           {showEoC && (
             <EndOfChapterScreen
+              score={finalScore}
+              jointScores={jointScores}
               nextTitle={nextChapter?.title ?? null}
               onRetry={handleRetry}
               onNext={handleNext}
@@ -2148,8 +2728,12 @@ export default function ChapterPlayer() {
         </div>
 
         {/* ── 30% sidebar ── */}
-        <div className="flex-[3] min-w-[220px] max-w-[320px]">
-          <ChapterSidebar chapters={chapters} currentIdx={currentIdx} onSelect={idx => setCurrentIdx(idx)} routine={routine} />
+        <div className={`${mobileSidebarOpen ? 'fixed inset-y-0 right-0 z-50 bg-black/95 backdrop-blur-xl border-l border-white/10 w-[280px]' : 'hidden lg:block'} flex-[3] min-w-[220px] max-w-[320px]`}>
+          {/* Close button for mobile overlay */}
+          <button onClick={() => setMobileSidebarOpen(false)} className="lg:hidden absolute top-3 right-3 z-50 p-2 text-white/60 hover:text-white">
+            <X className="w-5 h-5" />
+          </button>
+          <ChapterSidebar chapters={chapters} currentIdx={currentIdx} onSelect={idx => { setMobileSidebarOpen(false); setCurrentIdx(idx); }} routine={routine} />
         </div>
       </div>
     </div>
