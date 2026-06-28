@@ -1070,8 +1070,18 @@ function TeachContent({
           await speak(`from start till ${COUNT_SPOKEN[i]}`, true);
           if (aborted()) { if (rewindTrig.current) { goToSeekOrRewind(); continue; } return; }
         }
-        await sleepMs(80);
+                await sleepMs(80);
         if (aborted()) { if (rewindTrig.current) { goToSeekOrRewind(); continue; } return; }
+        // ── 0.5. 5-6-7-8 COUNTDOWN ─────────────────────────────────────────
+        for (const num of [5, 6, 7, 8] as const) {
+          if (aborted()) { if (rewindTrig.current) { goToSeekOrRewind(); continue; } return; }
+          speak(COUNT_SPOKEN[num] ?? String(num), false);
+          onCDRef.current(String(num));
+          await sleepMs(450);
+        }
+        onCDRef.current(null);
+        if (aborted()) { if (rewindTrig.current) { goToSeekOrRewind(); continue; } return; }
+        // ── 1. CUMULATIVE RUN ────────────────────────────────────────────────
         v.playbackRate = 0.4;
         await v.play().catch(() => {});
 
