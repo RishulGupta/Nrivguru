@@ -1931,6 +1931,7 @@ export default function ChapterPlayer() {
   const [watchCountdown, setWatchCountdown] = useState<number | null>(null);
 
   const [cameraMode, setCameraMode] = useState<CameraMode>('mirror');
+  const [videoMirrored, setVideoMirrored] = useState(true);
   const [hasWebcam, setHasWebcam] = useState(false);
   const [teachCount, setTeachCount] = useState<number | null>(null);
   const [teachLabel, setTeachLabel] = useState<string | null>(null);
@@ -2469,6 +2470,18 @@ export default function ChapterPlayer() {
           {cameraMode === 'ai' && <Cpu className="w-3 h-3" />}
           <span>{cameraMode === 'off' ? 'Off' : cameraMode === 'mirror' ? 'Mirror' : 'AI'}</span>
         </button>
+
+        {/* Mirror toggle */}
+        <button
+          onClick={() => setVideoMirrored(m => !m)}
+          title={videoMirrored ? 'Video mirrored (follow along)' : 'Video not mirrored'}
+          className={`shrink-0 flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] font-semibold border transition-all ${
+            videoMirrored ? 'bg-white/7 border-white/12 text-white/50' : 'bg-white/3 border-white/7 text-white/25'
+          }`}
+        >
+          <span>↔</span>
+          <span>{videoMirrored ? 'Mirror' : 'Normal'}</span>
+        </button>
       </header>
 
       {/* ── 70 / 30 body ── */}
@@ -2488,7 +2501,7 @@ export default function ChapterPlayer() {
               <div className={`relative bg-black overflow-hidden flex-1 ${showSplit || showTeachSplit ? 'border-r border-white/5' : ''}`}>
                 <video
                   ref={refVideoRef}
-                  className="absolute inset-0 w-full h-full object-contain"
+                  className={`absolute inset-0 w-full h-full object-contain ${videoMirrored ? 'scale-x-[-1]' : ''}`}
                   playsInline
                   onError={(e) => setVideoError('Failed to load video. The link may have expired.')}
                   onLoadedData={() => setVideoError(null)}
@@ -2508,6 +2521,19 @@ export default function ChapterPlayer() {
                         Retry
                       </button>
                     </div>
+                  </div>
+                )}
+
+                {/* L / R labels (swap when video is mirrored) */}
+                {!videoMirrored ? (
+                  <div className="absolute bottom-0 left-0 right-0 flex justify-between z-25 pointer-events-none">
+                    <span className="bg-black/50 text-white/70 text-xs font-bold px-2 py-0.5 m-1 rounded">R</span>
+                    <span className="bg-black/50 text-white/70 text-xs font-bold px-2 py-0.5 m-1 rounded">L</span>
+                  </div>
+                ) : (
+                  <div className="absolute bottom-0 left-0 right-0 flex justify-between z-25 pointer-events-none">
+                    <span className="bg-black/50 text-white/70 text-xs font-bold px-2 py-0.5 m-1 rounded">L</span>
+                    <span className="bg-black/50 text-white/70 text-xs font-bold px-2 py-0.5 m-1 rounded">R</span>
                   </div>
                 )}
 
