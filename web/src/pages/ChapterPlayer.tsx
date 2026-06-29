@@ -551,10 +551,10 @@ const COUNT_SPOKEN = ['', 'one', 'two', 'three', 'four', 'five', 'six', 'seven',
 
 // "trying one" / "trying two to four" — spoken right before each forward isolated play.
 // Count 1: always "trying one". Count 2+: uses the previous count from `from`. 
-function tryingPhrase(i: number, from: number = 0): string {
+function tryingPhrase(i: number): string {
   if (i === 1) return 'trying one';
-  if (from > 0) return `trying ${COUNT_SPOKEN[from]} to ${COUNT_SPOKEN[i]}`;
-  return `trying ${COUNT_SPOKEN[i]}`;
+  if (i === 2) return 'trying one and two';
+  return `trying ${COUNT_SPOKEN[i - 1]} and ${COUNT_SPOKEN[i]}`;
 }
 
 function howToGoPhrase(from: number, to: number): string {
@@ -686,10 +686,10 @@ function _detectAndCounts(beats: BeatCount[], intervalSec: number): BeatCount[] 
 function ensureCounts(effectiveCounts: BeatCount[] | undefined, startMs: number, endMs: number): BeatCount[] {
   const durSec = (endMs - startMs) / 1000;
   if (effectiveCounts && effectiveCounts.length > 0) {
-    // Use actual detected counts—they might be 4, 5, 6, 8, 12, etc.
-    // Always clone and ensure first beat is offset from chunk start so
-    // count-1 cumulative run has visible movement (never 0-second duration).
-    const beats = effectiveCounts.map(b => ({ ...b }));
+    // Use actual detected counts but cap at 8 max per teach phase.
+    const raw = effectiveCounts.slice(0, 8);
+    const beats = raw.map(b => ({ ...b }));
+    // Ensure first beat is offset from chunk start so count-1 has visible movement.
     const avgInterval = durSec / beats.length;
     const firstOffset = Math.min(avgInterval * 0.25, durSec * 0.05, 0.12);
     if (beats[0].time <= startMs / 1000 + 0.02) {
@@ -992,9 +992,12 @@ function TeachContent({
     // Web Speech fallback.
     const speakWS = (text: string, wait: boolean): Promise<void> => {
       if (!window.speechSynthesis) return Promise.resolve();
-      window.speechSynthesis.cancel();
-      const u = new SpeechSynthesisUtterance(text); u.rate = 0.88;
-      if (!wait) { window.speechSynthesis.speak(u); return Promise.resolve(); }
+      const u = new SpeechSynthesisUtterance(text); u.rate = 0.78;
+      if (!wait) {
+        window.speechSynthesis.speak(u); // just queue it, don't cancel (fixes 5-6-7-8 bug)
+        return Promise.resolve();
+      }
+      window.speechSynthesis.cancel(); // blocking mode: cancel previous, then speak
       return new Promise(resolve => {
         const done = () => resolve();
         u.onend = done; u.onerror = done; setTimeout(done, 7000);
@@ -1091,7 +1094,10 @@ function TeachContent({
         rewindTrig.current = false;
         onTSCRef.current?.(c + 1); // report 1-based step to parent for progress bar
         const i = c + 1;
-        const countEnd = beats[c].time;
+        let countEnd = beats[c].time;
+        if (c === 0 && beats.length > 1) {
+          countEnd = Math.max(countEnd, (beats[0].time + beats[1].time) / 2);
+        }
 
         // ── 1. TELEPORT to beat[0], cumulative run ──────────────────────────
         // For count 1, start from the beginning of the chunk (start → 1)
@@ -1103,19 +1109,20 @@ function TeachContent({
           await speak(`from start till ${COUNT_SPOKEN[i]}`, true);
           if (aborted()) { if (rewindTrig.current) { goToSeekOrRewind(); continue; } return; }
         }
-                await sleepMs(80);
+        await sleepMs(200);
         if (aborted()) { if (rewindTrig.current) { goToSeekOrRewind(); continue; } return; }
-        // ── 0.5. 5-6-7-8 COUNTDOWN ─────────────────────────────────────────
+
+        // ── 0.5. 5-6-7-8 COUNTDOWN (sloooow — ~1s per number) ──────────────
+        speak('five six seven eight', false);
         for (const num of [5, 6, 7, 8] as const) {
           if (aborted()) { if (rewindTrig.current) { goToSeekOrRewind(); continue; } return; }
-          speak(COUNT_SPOKEN[num] ?? String(num), false);
           onCDRef.current(String(num));
-          await sleepMs(450);
+          await sleepMs(900);
         }
         onCDRef.current(null);
         if (aborted()) { if (rewindTrig.current) { goToSeekOrRewind(); continue; } return; }
         // ── 1. CUMULATIVE RUN ────────────────────────────────────────────────
-        v.playbackRate = 0.4;
+        v.playbackRate = 0.35;
         await v.play().catch(() => {});
 
         // Real-time count narration: say each count exactly as the video reaches its beat
@@ -1145,18 +1152,16 @@ function TeachContent({
         v.pause();
         onCCRef.current(i);
 
-        // ── 2. DESCRIBE (3 sub-phases: dancer moves, then stickman) ────────────
+        // ── 2. DESCRIBE (3 sub-phases: VERY SLOW, each body part fully explained) ─────────────────
         // Upper → Lower → Connect.
-        // For each sub-phase: dancer plays i-1→i (forward ×2 + reverse), then stickman animates.
-        // RULE: only ONE of {dancer, stickman} is ever moving at a time.
+        // Per body part: dancer slow → stickman×2 → dancer slow again.
         const descFrom = c > 0 ? beats[c - 1].time : chapter.startTimeMs / 1000;
         const descTo = beats[c].time;
 
-        // Helper: play video from descFrom to descTo at a given speed
-        const danceFwd = (speed = 0.3): Promise<void> => new Promise(resolve => {
+        const danceSlow = (): Promise<void> => new Promise(resolve => {
           if (aborted() || descTo <= descFrom) { resolve(); return; }
           v.currentTime = descFrom;
-          v.playbackRate = speed;
+          v.playbackRate = 0.15; // VERY slow for beginner learning
           v.play().catch(() => {});
           const tick = () => {
             if (aborted() || v.currentTime >= descTo) { v.pause(); resolve(); return; }
@@ -1165,8 +1170,7 @@ function TeachContent({
           requestAnimationFrame(tick);
         });
 
-        // Helper: smooth animated reverse back to descFrom
-        const danceBwd = (): Promise<void> => new Promise(resolve => {
+        const danceReverse = (): Promise<void> => new Promise(resolve => {
           if (aborted()) { resolve(); return; }
           reverseSeekTo(descFrom).then(resolve);
         });
@@ -1183,22 +1187,31 @@ function TeachContent({
           onLCRef.current(sp.label);
           onCCRef.current(null);
 
-          // ── DANCER PHASE: hide stickman, dancer moves (fwd + reverse only) ──
+          // ── a) DANCER SLOW: show only dancer, narrate body-specific cue ──
           onDPRef.current?.(false);
-          speak(`Watch the ${sp.body}. On ${COUNT_SPOKEN[i]}, ${sp.cue}.`, false);
-          await danceFwd(0.3);
+          speak(`Watch the ${sp.body} very carefully. On ${COUNT_SPOKEN[i]}, ${sp.cue}.`, false);
+          await danceSlow();
           if (aborted()) break;
+          await sleepMs(500); // pause at end so learner sees the final pose
 
-          speak('Reverse.', false);
-          await danceBwd();
-          if (aborted()) break;
-
-          // ── STICKMAN PHASE: show stickman, video pauses ──
+          // ── b) STICKMAN ×2: dancer pauses, stickman shows movement ──
           onDPRef.current?.(true);
           onCCRef.current(i);
-          speak(`Now the stickman shows the ${sp.body}.`, false);
-          await sleepMs(2000); // TeachPoseAnimator auto-loops; just let it run
+          speak(`Now watch the stickman show the ${sp.body} movement.`, false);
+          await sleepMs(4500); // TeachPoseAnimator auto-loops; give it time for 2 full cycles
           if (aborted()) break;
+
+          speak(`Once more — watch the ${sp.body} very carefully.`, false);
+          await sleepMs(4500); // stickman runs 2 more cycles
+          if (aborted()) break;
+
+          // ── c) DANCER AGAIN: show the same movement again, slowly ──
+          onDPRef.current?.(false);
+          onCCRef.current(null);
+          speak(`Again — watch the ${sp.body}. On ${COUNT_SPOKEN[i]}, ${sp.cue}.`, false);
+          await danceSlow();
+          if (aborted()) break;
+          await sleepMs(800); // pause after dancer, let it sink in
 
           if (rewindTrig.current) { goToSeekOrRewind(); break; }
         }
@@ -1216,11 +1229,11 @@ function TeachContent({
         if (aborted()) { if (rewindTrig.current) { goToSeekOrRewind(); continue; } return; }
 
         onCCRef.current(null);
-        await sleepMs(200);
+        await sleepMs(300);
 
         // ── 2c/2d. "HOW TO GO" ×2 — demo current count i ──────────────────────
-        // HOW TO GO: starts from i-1 to i (half the length of trying)
-        // Skip for the first count (i=1) per user request
+        // HOW TO GO: starts from i-1 to i (half length of trying)
+        // After forward play, reverse back to start, then play forward again
         if (!aborted() && c > 0) {
           const howStart = beats[c - 1].time; // i-1
           const howEnd   = beats[c].time;     // i
@@ -1231,17 +1244,16 @@ function TeachContent({
             if (aborted()) break;
             onCCRef.current(i - 1);
             if (aborted()) break;
-            onLCRef.current(rep === 0 ? `How to go from ${COUNT_SPOKEN[i - 1]} to ${COUNT_SPOKEN[i]}` : `Again`);
+            onLCRef.current(rep === 0 ? `How to do ${COUNT_SPOKEN[i]}` : `Again — ${COUNT_SPOKEN[i]}`);
             onCDRef.current('2'); await sleepMs(1000); if (aborted()) break;
             onCDRef.current('1'); await sleepMs(1000); if (aborted()) break;
             onCDRef.current('go'); await sleepMs(200); if (aborted()) break;
             onCDRef.current(null);
             v.playbackRate = 0.25;
             await v.play().catch(() => {});
-            // Speak ALL intermediate counts as they appear on the beat
+            // Forward play
             await new Promise<void>(resolve => {
               const said = new Set<number>();
-              // Count indices in this range: c-1 to c (inclusive)
               for (let beatIdx = c - 1; beatIdx <= c; beatIdx++) {
                 if (!aborted() && beatIdx >= 0) { said.add(beatIdx); }
               }
@@ -1252,8 +1264,10 @@ function TeachContent({
                   if (beatIdx < 0) continue;
                   if (!said.has(beatIdx) && t >= beats[beatIdx].time - 0.02) {
                     said.add(beatIdx);
-                    speak(COUNT_SPOKEN[beatIdx + 1], false);
                     onCCRef.current(beatIdx + 1);
+                    if (beatIdx === c) {
+                      speak(COUNT_SPOKEN[beatIdx + 1], false);
+                    }
                   }
                 }
                 if (t >= howEnd + 0.22) { resolve(); return; }
@@ -1262,49 +1276,47 @@ function TeachContent({
               requestAnimationFrame(tick);
             });
             v.pause(); onCCRef.current(null); onLCRef.current(null);
+            // ── REVERSE back to howStart ──
+            speak('Reverse.', false);
+            await reverseSeekTo(howStart);
+            if (aborted()) break;
             await sleepMs(300);
           }
         }
         if (aborted()) { if (rewindTrig.current) { goToSeekOrRewind(); continue; } return; }
         await sleepMs(150);
 
-        // ── 3. ISOLATED REPLAY ×2 ────────────────────────────────────────────────
-        // TRYING: starts from i-2 to i (full context).
-        // For count 1, start from the beginning of the video chunk (start to 1).
+        // ── 3. ISOLATED REPLAY ×2 (TRYING: from i-2 to i, double length of howToGo) ──
+        // For count 1, start from the beginning. For count 2, start from i-1.
         if (!aborted()) {
           const isFirstCount = c === 0;
-          // TRYING: start from count i-1 (not i-2) per user request
-          const revTarget = isFirstCount ? (chapter.startTimeMs / 1000) : beats[Math.max(0, c - 1)].time;
-          const prevCount = isFirstCount ? 0 : i - 1;
-
-          // Build human-readable label like "1 → 3" or "start → 1"
-          const tryLabel = isFirstCount
-            ? `start → ${i}`
-            : (prevCount > 0 ? `${prevCount} → ${i}` : `→ ${i}`);
+          // TRYING: from i-2 to i (double the length of howToGo)
+          const revTarget = isFirstCount ? (chapter.startTimeMs / 1000) : (c >= 2 ? beats[c - 2].time : beats[c - 1].time);
+          const prevCount = isFirstCount ? 0 : (c >= 2 ? i - 2 : i - 1);
 
           for (let rep = 0; rep < 2 && !aborted(); rep++) {
             await reverseSeekTo(revTarget);
             if (aborted()) break;
 
-            speak(rep === 0 ? tryingPhrase(i, isFirstCount ? 0 : prevCount) : 'again', false);
+            speak(rep === 0 ? tryingPhrase(i) : 'again', false);
 
             if (prevCount > 0) onCCRef.current(prevCount);
             const naturalLabel = isFirstCount
             ? `Trying ${COUNT_SPOKEN[i]}`
-            : `${COUNT_SPOKEN[prevCount]} and ${COUNT_SPOKEN[i]}`;
+            : (c >= 2 ? `${COUNT_SPOKEN[i - 2]} to ${COUNT_SPOKEN[i]}` : `${COUNT_SPOKEN[i - 1]} and ${COUNT_SPOKEN[i]}`);
           onLCRef.current(rep === 0 ? naturalLabel : `Again`);
             onCDRef.current('2'); await sleepMs(1000); if (aborted()) break;
             onCDRef.current('1'); await sleepMs(1000); if (aborted()) break;
             onCDRef.current('go'); await sleepMs(200); if (aborted()) break;
             onCDRef.current(null); onLCRef.current(null); onCCRef.current(null);
 
-            // Forward play: narrator says ALL intermediate counts as they appear
+            // Forward play: trying goes from i-2 to i. Video shows all beats,
+            // but narrator only says i-1 and i (not i-2).
             v.playbackRate = 0.25;
             await v.play().catch(() => {});
             await new Promise<void>(resolve => {
               const said = new Set<number>();
-              // Count indices to speak: only count i-1 and count i
-              const firstBeatToSay = Math.max(0, c - 1); // c=0 => 0, c=1 => 0, c>=2 => c-1
+              const firstBeatToSay = Math.max(0, c - 2); // start video from i-2
               for (let beatIdx = firstBeatToSay; beatIdx <= c; beatIdx++) {
                 if (!aborted()) said.add(beatIdx);
               }
@@ -1315,11 +1327,12 @@ function TeachContent({
                   if (!said.has(beatIdx)) continue;
                   const beatTime = beatIdx >= 0 ? beats[beatIdx].time : chapter.startTimeMs / 1000;
                   if (t >= beatTime - 0.02) {
-                    said.delete(beatIdx); // only say each count once
-                    const countNumber = beatIdx >= 0 ? (beatIdx + 1) : 0; // 0 for start
-                    if (countNumber > 0) {
+                    said.delete(beatIdx);
+                    const countNumber = beatIdx + 1;
+                    onCCRef.current(countNumber); // always show the count on screen
+                    // Narrator speaks ONLY if this is count i-1 or i (not i-2)
+                    if (beatIdx >= c - 1) {
                       speak(COUNT_SPOKEN[countNumber], false);
-                      onCCRef.current(countNumber);
                     }
                   }
                 }
@@ -1329,6 +1342,10 @@ function TeachContent({
               requestAnimationFrame(tick);
             });
             v.pause(); onCCRef.current(null);
+            // ── REVERSE back to revTarget ──
+            speak('Reverse.', false);
+            await reverseSeekTo(revTarget);
+            if (aborted()) break;
             await sleepMs(300);
           }
           onCDRef.current(null); onLCRef.current(null); onCCRef.current(null);
