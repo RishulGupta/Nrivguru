@@ -1860,11 +1860,12 @@ function WarmupChapter({ onDone }: { onDone: () => void }) {
 // ── TeachPoseAnimator ─────────────────────────────────────────────────────────
 // Smooth RAF-interpolated animation through pose frames at ~0.3× real speed.
 
-function TeachPoseAnimator({ poseSlice, fromTime, toTime, cueJointIdx }: {
+function TeachPoseAnimator({ poseSlice, fromTime, toTime, cueJointIdx, highlightJoints }: {
   poseSlice: any[];
   fromTime: number;
   toTime: number;
   cueJointIdx?: number;
+  highlightJoints?: number[];
 }) {
   const [landmarks, setLandmarks] = useState<any[] | null>(null);
 
@@ -1958,7 +1959,7 @@ function TeachPoseAnimator({ poseSlice, fromTime, toTime, cueJointIdx }: {
         width={300}
         height={480}
         color="rgba(225, 195, 255, 0.96)"
-        highlightJoints={cueJointIdx !== undefined ? [cueJointIdx] : undefined}
+        highlightJoints={highlightJoints ?? (cueJointIdx !== undefined ? [cueJointIdx] : undefined)}
       />
     </div>
   );
@@ -2586,14 +2587,26 @@ export default function ChapterPlayer() {
                   </div>
                 )}
 
+                {/* Ghost overlay: dims non-focused body part during describe sub-phases */}
+                {teachDescribeActive && teachLabel === 'Arms' && (
+                  <div className="absolute inset-0 z-20 pointer-events-none"
+                    style={{ background: 'linear-gradient(to bottom, transparent 0%, transparent 45%, rgba(0,0,0,0.60) 100%)' }}
+                  />
+                )}
+                {teachDescribeActive && teachLabel === 'Legs' && (
+                  <div className="absolute inset-0 z-20 pointer-events-none"
+                    style={{ background: 'linear-gradient(to bottom, rgba(0,0,0,0.60) 0%, transparent 55%, transparent 100%)' }}
+                  />
+                )}
+
                 {/* L / R labels (swap when video is mirrored) */}
                 {!videoMirrored ? (
-                  <div className="absolute bottom-0 left-0 right-0 flex justify-between z-25 pointer-events-none">
+                  <div className="absolute bottom-0 left-0 right-0 flex justify-between z-30 pointer-events-none">
                     <span className="bg-black/50 text-white/70 text-xs font-bold px-2 py-0.5 m-1 rounded">R</span>
                     <span className="bg-black/50 text-white/70 text-xs font-bold px-2 py-0.5 m-1 rounded">L</span>
                   </div>
                 ) : (
-                  <div className="absolute bottom-0 left-0 right-0 flex justify-between z-25 pointer-events-none">
+                  <div className="absolute bottom-0 left-0 right-0 flex justify-between z-30 pointer-events-none">
                     <span className="bg-black/50 text-white/70 text-xs font-bold px-2 py-0.5 m-1 rounded">L</span>
                     <span className="bg-black/50 text-white/70 text-xs font-bold px-2 py-0.5 m-1 rounded">R</span>
                   </div>
@@ -2752,6 +2765,7 @@ export default function ChapterPlayer() {
                     fromTime={teachAnimFromTime}
                     toTime={teachAnimToTime}
                     cueJointIdx={teachCueJointIdx}
+                    highlightJoints={teachLabel === 'Arms' ? [11,12,13,14,15,16] : teachLabel === 'Legs' ? [23,24,25,26,27,28] : undefined}
                   />
 
                   {/* Count transition — frosted pill, top-center */}
