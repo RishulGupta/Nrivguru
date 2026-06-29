@@ -291,6 +291,8 @@ interface BuildStep {
 interface TeachPlan {
   beats: BeatCount[];
   cues: Map<number, string>;
+  upperCues: Map<number, string>;
+  lowerCues: Map<number, string>;
   descriptions: Map<number, string>; // richer per-count teacher phrases
   pausePoints: PausePoint[];
   steps: BuildStep[];
@@ -328,11 +330,13 @@ const PAUSE_THRESHOLD = 0.16;
 function computeJointCues(
   poseSlice: any[],
   beats: BeatCount[],
-): { cues: Map<number, string>; pausePointCounts: number[] } {
-  if (!poseSlice?.length) return { cues: new Map(), pausePointCounts: [] };
+): { cues: Map<number, string>; upperCues: Map<number, string>; lowerCues: Map<number, string>; pausePointCounts: number[] } {
+  if (!poseSlice?.length) return { cues: new Map(), upperCues: new Map(), lowerCues: new Map(), pausePointCounts: [] };
 
   interface Delta { count: number; joint: string; delta: number; dx: number; dy: number; }
-  const deltas: Delta[] = [];
+  const bodyDeltas: Delta[] = [];
+  const upperDeltas: Delta[] = [];
+  const lowerDeltas: Delta[] = [];
 
   for (let i = 0; i < beats.length; i++) {
     const t1 = beats[i].time;
@@ -348,6 +352,8 @@ function computeJointCues(
     const frame2 = poseSlice[f2Idx];
     if (!frame1 || !frame2) continue;
     let maxDelta = 0, maxJoint = '', maxDx = 0, maxDy = 0;
+    let maxUpperDelta = 0, maxUpperJoint = '', maxUpperDx = 0, maxUpperDy = 0;
+    let maxLowerDelta = 0, maxLowerJoint = '', maxLowerDx = 0, maxLowerDy = 0;
     for (const jname of getJointKeys()) {
       const idx = JOINT_IDX[jname];
       const lm1 = frame1.landmarks?.[idx] ?? frame1[idx];
@@ -357,20 +363,36 @@ function computeJointCues(
       const dy = (lm2.y ?? 0) - (lm1.y ?? 0);
       const d = Math.sqrt(dx * dx + dy * dy);
       if (d > maxDelta) { maxDelta = d; maxJoint = jname; maxDx = dx; maxDy = dy; }
+      const isUpper = jname.includes('shoulder') || jname.includes('elbow') || jname.includes('wrist');
+      const isLower = jname.includes('hip') || jname.includes('knee') || jname.includes('ankle');
+      if (isUpper && d > maxUpperDelta) { maxUpperDelta = d; maxUpperJoint = jname; maxUpperDx = dx; maxUpperDy = dy; }
+      if (isLower && d > maxLowerDelta) { maxLowerDelta = d; maxLowerJoint = jname; maxLowerDx = dx; maxLowerDy = dy; }
     }
     if (maxDelta > CUE_THRESHOLD && maxJoint) {
-      deltas.push({ count: beats[i].count, joint: maxJoint, delta: maxDelta, dx: maxDx, dy: maxDy });
+      bodyDeltas.push({ count: beats[i].count, joint: maxJoint, delta: maxDelta, dx: maxDx, dy: maxDy });
+    }
+    if (maxUpperDelta > CUE_THRESHOLD && maxUpperJoint) {
+      upperDeltas.push({ count: beats[i].count, joint: maxUpperJoint, delta: maxUpperDelta, dx: maxUpperDx, dy: maxUpperDy });
+    }
+    if (maxLowerDelta > CUE_THRESHOLD && maxLowerJoint) {
+      lowerDeltas.push({ count: beats[i].count, joint: maxLowerJoint, delta: maxLowerDelta, dx: maxLowerDx, dy: maxLowerDy });
     }
   }
 
-  const cues = new Map<number, string>();
-  deltas.forEach(d => cues.set(d.count, jointDeltaPhrase(d.joint, d.dx, d.dy)));
-  const pausePointCounts = deltas
+  const all = [...bodyDeltas, ...upperDeltas, ...lowerDeltas];
+  const pausePointCounts = all
     .filter(d => d.delta > PAUSE_THRESHOLD)
     .sort((a, b) => b.delta - a.delta)
     .slice(0, 2)
     .map(d => d.count);
-  return { cues, pausePointCounts };
+
+  const cues = new Map<number, string>();
+  const upperCues = new Map<number, string>();
+  const lowerCues = new Map<number, string>();
+  bodyDeltas.forEach(d => cues.set(d.count, jointDeltaPhrase(d.joint, d.dx, d.dy)));
+  upperDeltas.forEach(d => upperCues.set(d.count, jointDeltaPhrase(d.joint, d.dx, d.dy)));
+  lowerDeltas.forEach(d => lowerCues.set(d.count, jointDeltaPhrase(d.joint, d.dx, d.dy)));
+  return { cues, upperCues, lowerCues, pausePointCounts };
 }
 
 // ── Generate progressive build steps ──────────────────────────────────────────
@@ -622,12 +644,12 @@ async function buildTeachPlan(
 
   const promise = (async (): Promise<TeachPlan> => {
     const beats = ensureCounts(effectiveCounts, startMs, endMs);
-    const { cues, pausePointCounts } = computeJointCues(poseSlice ?? [], beats);
+    const { cues, upperCues, lowerCues, pausePointCounts } = computeJointCues(poseSlice ?? [], beats);
     const { steps, connectors } = generateBuildSteps(beats, pausePointCounts, cues);
     const pausePoints: PausePoint[] = steps.filter(s => s.pausePoint).map(s => s.pausePoint!);
     const descriptions = new Map<number, string>();
     for (let i = 1; i <= beats.length; i++) descriptions.set(i, buildTeacherDescription(i, cues.get(i)));
-    const plan: TeachPlan = { beats, cues, descriptions, pausePoints, steps, connectors };
+    const plan: TeachPlan = { beats, cues, upperCues, lowerCues, descriptions, pausePoints, steps, connectors };
     _teachPlanCache.set(chunkId, plan);
     return plan;
   })();
@@ -665,7 +687,15 @@ function ensureCounts(effectiveCounts: BeatCount[] | undefined, startMs: number,
   const durSec = (endMs - startMs) / 1000;
   if (effectiveCounts && effectiveCounts.length > 0) {
     // Use actual detected counts—they might be 4, 5, 6, 8, 12, etc.
-    const withAnd = _detectAndCounts(effectiveCounts, durSec / (effectiveCounts.length));
+    // Always clone and ensure first beat is offset from chunk start so
+    // count-1 cumulative run has visible movement (never 0-second duration).
+    const beats = effectiveCounts.map(b => ({ ...b }));
+    const avgInterval = durSec / beats.length;
+    const firstOffset = Math.min(avgInterval * 0.25, durSec * 0.05, 0.12);
+    if (beats[0].time <= startMs / 1000 + 0.02) {
+      beats[0].time = startMs / 1000 + firstOffset;
+    }
+    const withAnd = _detectAndCounts(beats, avgInterval);
     return withAnd;
   }
 
@@ -1123,7 +1153,7 @@ function TeachContent({
         const descTo = beats[c].time;
 
         // Helper: play video from descFrom to descTo at a given speed
-        const danceFwd = (speed = 0.15): Promise<void> => new Promise(resolve => {
+        const danceFwd = (speed = 0.3): Promise<void> => new Promise(resolve => {
           if (aborted() || descTo <= descFrom) { resolve(); return; }
           v.currentTime = descFrom;
           v.playbackRate = speed;
@@ -1141,10 +1171,10 @@ function TeachContent({
           reverseSeekTo(descFrom).then(resolve);
         });
 
-        // 3 body-part sub-phases
+        // 3 body-part sub-phases (with per-body-part dominant-joint cues)
         const subPhases = [
-          { label: 'Arms', body: 'arms and hands', cue: plan.cues.get(i)?.replace(/_/g, ' ') ?? 'focus on hands' },
-          { label: 'Legs', body: 'legs and hips', cue: plan.cues.get(i)?.replace(/_/g, ' ') ?? 'focus on feet' },
+          { label: 'Arms', body: 'arms and hands', cue: plan.upperCues.get(i)?.replace(/_/g, ' ') ?? 'focus on hands' },
+          { label: 'Legs', body: 'legs and hips', cue: plan.lowerCues.get(i)?.replace(/_/g, ' ') ?? 'focus on feet' },
           { label: 'Connect', body: 'full body', cue: plan.cues.get(i)?.replace(/_/g, ' ') ?? 'connect everything' },
         ];
 
@@ -1153,25 +1183,21 @@ function TeachContent({
           onLCRef.current(sp.label);
           onCCRef.current(null);
 
-          // ── DANCER PHASE: hide stickman, dancer moves ──
+          // ── DANCER PHASE: hide stickman, dancer moves (fwd + reverse only) ──
           onDPRef.current?.(false);
           speak(`Watch the ${sp.body}. On ${COUNT_SPOKEN[i]}, ${sp.cue}.`, false);
-          await danceFwd(0.15);
+          await danceFwd(0.3);
           if (aborted()) break;
 
           speak('Reverse.', false);
           await danceBwd();
           if (aborted()) break;
 
-          speak(`Again — ${sp.cue}.`, false);
-          await danceFwd(0.15);
-          if (aborted()) break;
-
           // ── STICKMAN PHASE: show stickman, video pauses ──
           onDPRef.current?.(true);
           onCCRef.current(i);
           speak(`Now the stickman shows the ${sp.body}.`, false);
-          await sleepMs(2500); // TeachPoseAnimator auto-loops; just let it run
+          await sleepMs(2000); // TeachPoseAnimator auto-loops; just let it run
           if (aborted()) break;
 
           if (rewindTrig.current) { goToSeekOrRewind(); break; }

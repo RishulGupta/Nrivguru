@@ -52,8 +52,8 @@ JOINT_WEIGHTS: dict[int, float] = {
 # Fusion
 FUSION_TOLERANCE_SEC: float = 0.12    # audio ↔ motion snap window (seconds)
 
-# Count chunking
-CHUNK_BEATS: int = 8
+# Count chunking (dynamic — not always 8; see chunk_into_counts)
+CHUNK_BEATS: int = 8  # default for long sequences; short clips use actual count
 IRREGULAR_TEMPO_DEVIATION: float = 0.15   # >15% local BPM deviation → flag irregular
 TEMPO_WINDOW_SEC: float = 6.0             # rolling window for local tempo estimate
 
@@ -332,15 +332,15 @@ def _overall_tempo(beat_times: list[float]) -> float:
 
 # ── Count chunking ────────────────────────────────────────────────────────────
 
-def chunk_into_counts(beat_times: list[float], overall_bpm: float) -> list[CountSegment]:
+def chunk_into_counts(beat_times: list[float], overall_bpm: float, chunk_beats: int = CHUNK_BEATS) -> list[CountSegment]:
     """
-    Group beat_times into CHUNK_BEATS-count segments. Mark segments where local
+    Group beat_times into chunk_beats-count segments. Mark segments where local
     BPM deviates > IRREGULAR_TEMPO_DEVIATION from the overall BPM as irregular —
     these may be freestyle, holds, or tempo changes that need special handling.
     """
     segments: list[CountSegment] = []
-    for gs in range(0, len(beat_times), CHUNK_BEATS):
-        group = beat_times[gs: gs + CHUNK_BEATS]
+    for gs in range(0, len(beat_times), chunk_beats):
+        group = beat_times[gs: gs + chunk_beats]
         if len(group) < 2:
             continue
         mid = (group[0] + group[-1]) / 2
@@ -392,6 +392,16 @@ def analyze(
 
     beat_times, sources, confidences = fuse_beats(audio_beats, motion_beats, has_audio)
 
+    # Ensure first beat is offset from chunk start so count-1 shows visible movement
+    # (mirrors the frontend ensureCounts firstOffset logic)
+    if beat_times and len(beat_times) > 1:
+        first = beat_times[0]
+        if first < 0.05:
+            offset = min(0.12, (beat_times[-1] - first) * 0.05)
+            beat_times = [t + offset for t in beat_times]
+    elif beat_times and len(beat_times) > 0 and beat_times[0] < 0.05:
+        beat_times[0] = 0.12
+
     if not beat_times:
         return CountsResult(
             has_audio_music=has_audio,
@@ -404,12 +414,16 @@ def analyze(
 
     overall_bpm = (audio_tempo if has_audio else motion_tempo) or _overall_tempo(beat_times)
 
+    # Dynamic chunk beats: short clips use actual detected count; long ones use standard 8
+    detect_counts = len(beat_times)
+    chunk_beats = max(4, min(detect_counts, 8)) if detect_counts <= 12 else 8
+
     return CountsResult(
         has_audio_music=has_audio,
         overall_tempo_bpm=round(overall_bpm, 2),
         beat_timestamps=[round(t, 4) for t in beat_times],
         beat_sources=sources,
-        count_segments=chunk_into_counts(beat_times, overall_bpm),
+        count_segments=chunk_into_counts(beat_times, overall_bpm, chunk_beats=chunk_beats),
         confidence_per_beat=[round(c, 3) for c in confidences],
     )
 
