@@ -672,9 +672,12 @@ function ensureCounts(effectiveCounts: BeatCount[] | undefined, startMs: number,
   // Fallback: estimate count based on chunk duration (~0.5s per beat = ~120 BPM)
   const estimatedCount = Math.max(4, Math.min(16, Math.round(durSec / 0.5)));
   const interval = durSec / estimatedCount;
+  // Offset first beat from chunk start so count-1 ALWAYS shows visible movement.
+  // (real beats may land at the start, but this fallback must never give 0-length counts)
+  const firstOffset = Math.min(interval * 0.25, durSec * 0.05, 0.12);
   return Array.from({ length: estimatedCount }, (_, i) => ({
     count: i + 1,
-    time: startMs / 1000 + i * interval,
+    time: startMs / 1000 + firstOffset + i * interval,
   }));
 }
 
@@ -2436,9 +2439,17 @@ export default function ChapterPlayer() {
   const teachAnimFromTime = activeAnimCount > 1
     ? (teachBeats[activeAnimCount - 2]?.time ?? teachBeats[0]?.time ?? 0)
     : (chapter?.startTimeMs ? chapter.startTimeMs / 1000 : (teachBeats[0]?.time ?? 0));
-  const teachAnimToTime = activeAnimCount >= 1
-    ? (teachBeats[activeAnimCount - 1]?.time ?? teachBeats[teachBeats.length - 1]?.time ?? 1)
-    : 1;
+  const teachAnimToTime = (() => {
+    const raw = activeAnimCount >= 1
+      ? (teachBeats[activeAnimCount - 1]?.time ?? teachBeats[teachBeats.length - 1]?.time ?? 1)
+      : 1;
+    // Count 1 often has its beat at the chunk start → zero-length animation range.
+    // Force a minimum 0.2 s window so the stickman actually moves.
+    if (activeAnimCount === 1 && raw <= teachAnimFromTime + 0.02) {
+      return teachAnimFromTime + 0.2;
+    }
+    return raw;
+  })();
 
   const teachCueJointName = (teachCount ?? teachStep ?? 0) >= 1 ? (teachCues.get(teachCount ?? teachStep ?? 1) ?? null) : null;
   const teachCueJointIdx = teachCueJointName !== null ? JOINT_IDX[teachCueJointName] : undefined;
