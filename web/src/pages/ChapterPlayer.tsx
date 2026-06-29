@@ -990,7 +990,7 @@ function TeachContent({
       return speakWS(text, false);
     };
 
-    const aborted = () => cancel.cancelled || rewindTrig.current;
+    const aborted = () => cancel.cancelled || rewindTrig.current || seekToRef.current !== null;
 
     // Pause-aware sleep: suspends when paused, resumes on resume(), exits on rewind/cancel
     const sleepMs = async (ms: number): Promise<void> => {
@@ -1112,63 +1112,71 @@ function TeachContent({
         v.pause();
         onCCRef.current(i);
 
-        // ── 2. DESCRIBE (3 sub-phases with video movement) ────────────────────
-        // Video plays from i-1 to i: first the dancer, then the stickman.
+        // ── 2. DESCRIBE (3 sub-phases: dancer moves, then stickman) ────────────
         // Upper → Lower → Connect.
+        // For each sub-phase: dancer plays i-1→i (forward ×2 + reverse), then stickman animates.
+        // RULE: only ONE of {dancer, stickman} is ever moving at a time.
         const descFrom = c > 0 ? beats[c - 1].time : chapter.startTimeMs / 1000;
         const descTo = beats[c].time;
 
-        // Play video from A to B at 0.15× speed
-        const playSlowSegment = (from: number, to: number): Promise<void> => new Promise(resolve => {
-          if (aborted() || to <= from) { resolve(); return; }
-          v.currentTime = from;
-          v.playbackRate = 0.15;
+        // Helper: play video from descFrom to descTo at a given speed
+        const danceFwd = (speed = 0.15): Promise<void> => new Promise(resolve => {
+          if (aborted() || descTo <= descFrom) { resolve(); return; }
+          v.currentTime = descFrom;
+          v.playbackRate = speed;
           v.play().catch(() => {});
           const tick = () => {
-            if (aborted() || v.currentTime >= to) { v.pause(); resolve(); return; }
+            if (aborted() || v.currentTime >= descTo) { v.pause(); resolve(); return; }
             requestAnimationFrame(tick);
           };
           requestAnimationFrame(tick);
         });
 
-        onDPRef.current?.(true); // show split view during sub-phases
+        // Helper: smooth animated reverse back to descFrom
+        const danceBwd = (): Promise<void> => new Promise(resolve => {
+          if (aborted()) { resolve(); return; }
+          reverseSeekTo(descFrom).then(resolve);
+        });
 
-        // Phase 1: UPPER BODY (Arms / Hands)
-        if (!aborted()) {
-          onLCRef.current('Arms');
+        // 3 body-part sub-phases
+        const subPhases = [
+          { label: 'Arms', body: 'arms and hands', cue: plan.cues.get(i)?.replace(/_/g, ' ') ?? 'focus on hands' },
+          { label: 'Legs', body: 'legs and hips', cue: plan.cues.get(i)?.replace(/_/g, ' ') ?? 'focus on feet' },
+          { label: 'Connect', body: 'full body', cue: plan.cues.get(i)?.replace(/_/g, ' ') ?? 'connect everything' },
+        ];
+
+        for (const sp of subPhases) {
+          if (aborted()) break;
+          onLCRef.current(sp.label);
           onCCRef.current(null);
-          const cue = plan.cues.get(i)?.replace(/_/g, ' ') ?? 'focus on hands';
-          speak(`Arms first — on ${COUNT_SPOKEN[i]}, ${cue}.`, false);
-          await playSlowSegment(descFrom, descTo);
+
+          // ── DANCER PHASE: hide stickman, dancer moves ──
+          onDPRef.current?.(false);
+          speak(`Watch the ${sp.body}. On ${COUNT_SPOKEN[i]}, ${sp.cue}.`, false);
+          await danceFwd(0.15);
+          if (aborted()) break;
+
+          speak('Reverse.', false);
+          await danceBwd();
+          if (aborted()) break;
+
+          speak(`Again — ${sp.cue}.`, false);
+          await danceFwd(0.15);
+          if (aborted()) break;
+
+          // ── STICKMAN PHASE: show stickman, video pauses ──
+          onDPRef.current?.(true);
           onCCRef.current(i);
-          if (aborted()) return;
-          if (rewindTrig.current) { goToSeekOrRewind(); continue; }
+          speak(`Now the stickman shows the ${sp.body}.`, false);
+          await sleepMs(2500); // TeachPoseAnimator auto-loops; just let it run
+          if (aborted()) break;
+
+          if (rewindTrig.current) { goToSeekOrRewind(); break; }
         }
 
-        // Phase 2: LOWER BODY (Legs / Hips)
-        if (!aborted()) {
-          onLCRef.current('Legs');
-          onCCRef.current(null);
-          const cue = plan.cues.get(i)?.replace(/_/g, ' ') ?? 'focus on feet';
-          speak(`Legs — on ${COUNT_SPOKEN[i]}, ${cue}.`, false);
-          await playSlowSegment(descFrom, descTo);
-          onCCRef.current(i);
-          if (aborted()) return;
-          if (rewindTrig.current) { goToSeekOrRewind(); continue; }
-        }
-
-        // Phase 3: FULL BODY (Connect)
-        if (!aborted()) {
-          onLCRef.current('Connect');
-          onCCRef.current(null);
-          speak(`Put it together — on ${COUNT_SPOKEN[i]}, connect arms and legs.`, false);
-          await playSlowSegment(descFrom, descTo);
-          onCCRef.current(i);
-          await sleepMs(1000);
-        }
-
-        onLCRef.current(null);
         onDPRef.current?.(false);
+        onLCRef.current(null);
+        onCCRef.current(null);
         if (aborted()) { if (rewindTrig.current) { goToSeekOrRewind(); continue; } return; }
 
         // ── 2b. FREEZE CHECK — hold final frame 5s, narrator cues posture check ──
@@ -2427,7 +2435,7 @@ export default function ChapterPlayer() {
   const activeAnimCount = teachCount ?? teachStep ?? 1;
   const teachAnimFromTime = activeAnimCount > 1
     ? (teachBeats[activeAnimCount - 2]?.time ?? teachBeats[0]?.time ?? 0)
-    : (teachBeats[0]?.time ?? 0);
+    : (chapter?.startTimeMs ? chapter.startTimeMs / 1000 : (teachBeats[0]?.time ?? 0));
   const teachAnimToTime = activeAnimCount >= 1
     ? (teachBeats[activeAnimCount - 1]?.time ?? teachBeats[teachBeats.length - 1]?.time ?? 1)
     : 1;
