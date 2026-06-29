@@ -273,7 +273,7 @@ function extractMotionBeats(frames: any[], startTimeMs: number, endTimeMs: numbe
   }
 
   return snapped.map((fi, i) => ({
-    count: ((i % 8) + 1),
+    count: i + 1,
     time: startTimeMs / 1000 + fi / fps,
   }));
 }
@@ -547,7 +547,7 @@ async function synthesizeTTS(text: string, ctx: AudioContext, _retry = false): P
 }
 
 
-const COUNT_SPOKEN = ['', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight'];
+const COUNT_SPOKEN = ['', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine', 'ten', 'eleven', 'twelve', 'thirteen', 'fourteen', 'fifteen', 'sixteen'];
 
 // "trying one" / "trying two to four" — spoken right before each forward isolated play.
 // Count 1: always "trying one". Count 2+: uses the previous count from `from`. 

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-counts_maker.py — Beat-aligned 8-count segment generator for NrivGuru dance clips.
+counts_maker.py — Variable beat-count segment generator for NrivGuru dance clips.
 
 Fuses audio beats (librosa, when music is present) with motion-derived beats from
 pre-extracted MediaPipe pose landmarks (always available). Works with zero audio.
@@ -483,7 +483,7 @@ def plot_result(video_path: str, landmarks: Optional[np.ndarray], result: Counts
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description='Beat-aligned 8-count generator for dance clips.',
+        description='Variable beat-count generator for dance clips.',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )
